@@ -55,7 +55,12 @@ Already implements, over the vendor HID protocol:
 - **`--playback-speakers-to-7-1` / `--playback-headphones-to-7-1`** (+5.1,
   stereo) ← the speaker-config switching (via USB AudioControl SET_CUR on
   the UAC feature units — the standard side, not vendor HID)
-- **DAC filter selection** (fast/slow roll-off, min/linear phase)
+- **DAC filter selection** — `--playback-filter
+  {FAST_ROLL_OFF_MINIMUM_PHASE|SLOW_ROLL_OFF_MINIMUM_PHASE|FAST_ROLL_OFF_LINEAR_PHASE|SLOW_ROLL_OFF_LINEAR_PHASE}`
+  (`5A 6C 03 ...` frames). **Note:** only the 4 GUI filters are in their
+  enum; the hidden 5th (NOS) is payload `0003` — one enum value to add
+  (see `docs/fw_notes.md` § "DAC FILTERS"; device-side code 5, verified
+  live).
 - Full SBX suite: Surround/Crystalizer/Bass/SmartVolume/Dialog+ values and
   toggles, SBX profile switch (Gaming/Music/Cinema/Special)
 - Recording: mic boost, noise reduction, AEC, smart volume, mic-EQ with

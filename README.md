@@ -76,6 +76,34 @@ surface for the audio DSP.
 enabled in the mask — software can press the G6's buttons and query jacks
 directly.
 
+**The 5th DAC filter — NOS (hidden in the GUI, live-verified in the
+chip).** The G6's DAC is a Cirrus Logic **CS43131**, and its `PCM Filter
+Option` register (`0x90000`) has a dedicated **NOS bit** ("NOS emulation
+mode", datasheet §5.9 — Cirrus even documents the pop-free enable
+sequence). The device *advertises 5 filters* over its SoundCore interface:
+
+```
+code 3  Fast Roll-off, Minimum Phase
+  code 4  Slow Roll-off, Minimum Phase
+code 5  Non-Over-Sampling (NOS)      ← hidden in the app GUI!
+code 6  Fast Roll-off, Linear Phase
+code 7  Slow Roll-off, Linear Phase
+```
+
+Sound Blaster Command shows only the 4 roll-off variants — its code
+hard-skips `"NonOverSampling"` **by name** when building the filter list
+(`BaseFiltersPageViewModel`, decompiled). The NOS filter works: it's a
+real silicon mode that bypasses the DAC's digital interpolation filter.
+What that does on a delta-sigma DAC: the output becomes a zero-order-hold
+of the samples — no pre-ringing, minimum delay, but with sinc passband
+droop (≈ −3.2 dB at 20 kHz for 44.1 kHz content) and unattenuated images
+above Nyquist. Audiophile taste feature; objectively worse on
+measurements — which is presumably why Creative ships it hidden.
+
+The wire command for it (same HID `'Z'` family): `5A 6C 03 00 03` + commit
+`5A 6C 01 01` — verified against the Linux community's Wireshark captures
+(see below).
+
 ### Things that exist in firmware but are locked off for the G6
 
 - **96 kHz optical input passthrough** — firmware handler exists, but the G6
@@ -193,6 +221,12 @@ Command uses.
   Malcolm customization block. Read-mostly; every SET is reversible.
 - **[`tools/G6HidSet/`](tools/G6HidSet/)** — toggle Direct/SPDIF-Direct
   modes from the command line.
+- **[`tools/G6SoundCoreProbe/`](tools/G6SoundCoreProbe/)** — talk to the
+  device through Creative's **SoundCore** layer (`ISoundCore` COM from
+  `SndCrUSB.dll`, loaded registration-free exactly like Sound Blaster
+  Command does). Enumerates contexts, features and params live, and
+  dumps the DAC filter state: it's how the hidden 5th filter (NOS) was
+  discovered on a real G6.
 - **[`tools/thd_test.py`](tools/G6HidSet/../G6Measure/)** — the THD+N
   loopback measurement that verifies the -2 dBFS behavior on your own unit
   (needs a 3.5mm cable from headphone-out to a line-in).
@@ -235,7 +269,16 @@ G6HidExplore.exe hrtf set 0     # ...and back
 - App: Sound Blaster Command decompiled with ILSpy (the G6 product DLL even
   shipped with debug symbols).
 - Live device access: read-only HID queries + reversible toggles via
-  Creative's own COM library.
+  Creative's own COM library; SoundCore-layer interrogation via the
+  `ISoundCore` COM server in `SndCrUSB.dll` (registration-free, same as
+  Creative's own app manifest activates it).
+- DAC silicon: Cirrus Logic **CS43131** datasheet (DS1155F2) — filter-mode
+  register map (0x90000: roll-off speed, phase comp, NOS bit) and the
+  NOS enable/disable sequences (§5.9) that back the hidden 5th filter.
+- Linux ecosystem cross-check: `soundblaster-x-g6-cli`'s Wireshark payload
+  catalogue (`doc/usb-spec.md`, `payloads/raw/`) — independently confirms
+  our HID frame decode for Direct Mode, SPDIF-direct, SBX effects, and the
+  4 visible DAC filters.
 - Original measurements that motivated question B: Audio Science Review
   forum, "Review and Measurements of Sound BlasterX G6", Mar 2019.
 
