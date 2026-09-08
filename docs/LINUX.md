@@ -122,3 +122,28 @@ verified live.
 
 *Cross-check before release: verify frames with `usbmon` once against
 SBCommand on a Windows machine — then the Linux daemon is fully grounded.*
+
+## Update: the Windows host APO (does Linux lose anything?)
+
+Deeper analysis of `KSUSBAPO64.dll` (the Windows SysFx APO registered on
+the G6 endpoint) shows Creative also ships a **host-side effect engine**
+with 50+ modules (CMSS-3D/upmix family, Crystalizer, MultiBandEQ,
+BassManagement, DTS Neo PC, SVM, VoiceFX, PitchShift, Limiter,
+MatrixEncoder, SpeakerEQ, ASRC…), configured via an obfuscated
+`cfSB1770.ini`. Important context for Linux users:
+
+- This APO is the **Windows-audio-engine integration/fallback layer** —
+  it is *not* where the G6's virtual-7.1/SBX render happens when Sound
+  Blaster Command is in control. The authoritative path is the **device
+  DSP** (VT1728), commanded over the HID frames this project documents.
+- Evidence: our firmware disassembly shows Direct Mode works by *the
+  device firmware stopping its own effect-register writes* — a host APO
+  cannot be the renderer in that flow. And the existing Linux tools
+  (see `LINUX-ECOSYSTEM.md`) drive full SBX purely via HID.
+- What the APO layer adds on Windows (and what doesn't map 1:1 to Linux):
+  per-app volume integration, Windows spatial/streaming-mode glue, and a
+  fallback when the device path is busy. None of it is required for
+  Direct / 7.1 / SBX.
+
+So the conclusion stands: **Linux loses nothing that matters** — the DSP
+work is on the device; only the control channel needs porting.

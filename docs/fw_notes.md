@@ -144,12 +144,14 @@ So "Direct Mode virtual 7.1" = 7.1 channel mask set as Windows endpoint format; 
 ## LIVE CONTROL TESTS (G6HidExplore, feature-mask 0x5041B810)
 
 G6 device personality reports (live GET FeatureMask):
+
 - ENABLED: MicBoost(4), SoftButtonControl(11), JackControl(12), BatteryControl(13), LEDControl(15), **MalcolmParameterCustomization(16)**, StereoDirectMode(22), SPDIFOutDirectMode(28), **SpeakersHRTFMode(30)**
 - DISABLED (fw rejects SET with E_FAIL): SCPPassthrough(0), MasterVolumeHigh, USBOverdrive, CommitSettings, Bluetooth(5,7), UserProfiles(8,9), ControlPermission(10), ANC, Siren, ComboWUH, DirectMonitor, MicTypeCfg, MicReverb, **HeadphoneHighGainMode(23)**, RestoreDefault, DataStore, **96kSPDIFInPassthrough(26)**, SpeakersConfig?? (27 — but app CAN set speaker config... mask may not gate all), Wattage, AutoSleep(31)
 
 Live tests (all states restored after):
+
 | Feature | Mask bit | SET result | Controllable? | Point? |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | SpeakersHRTFMode | 30 ON | **hr=0x00000000, persisted** | YES — any host app, no SBCommand needed | **Real hidden feature**: HRTF on speaker/line-out path independent of the app's HP-virtualization framing |
 | HeadphoneHighGainMode | 23 OFF | hr=0x80004005 E_FAIL | No — fw-gated | G6 gain stays front-panel-button only |
 | 96kHzSPDIFInPassthrough | 26 OFF | hr=0x80004005 E_FAIL | No — fw-gated | Would pass 96k SPDIF-in without 48k downsample; personality-locked |
@@ -160,6 +162,21 @@ Live tests (all states restored after):
 ## VT1728 SCP parameter namespace (159 named DSP params, decompiled CTHIDRpALibrary.cs:55-214)
 
 The SCP debug/query interface names every DSP parameter: AEC (enable/delays), NoiseReduction, VoiceFocus (mic distance/wedge/source angle), VoiceFX (formants/pitch/envelope/quiver/contour), MicEQ (8 bands gain/freq/bandwidth), MicSVM, MicReverb (full room model: level/pan/size/decay/diffusion/reflect/reverb/detune/echo...), DualMicEndFiring, CMSS3D (immersion), DialogPlus, SVM, Crystalizer, GraphicEQ (preamp + bands)… These map onto the op-149/op-150 register engine decoded in fw. The CTHIDRpA vtable exposes query+range+passthrough-write methods — an engineering control surface the G6 app never uses (bit 0 SCPPassthrough is OFF in mask, but MalcolmParameterCustomization bit 16 is ON and the I2C-passthrough SET vtable method exists).
+
+## HOST APO vs DEVICE DSP — final architecture refinement (todo #1 closed)
+
+Deeper dig into KSUSBAPO64.dll + SndCrUSB.dll + ksusba64.sys (IDA sessions apo2/snd/ksdrv) found the full picture — TWO effect paths exist:
+
+**Path 1 (primary, device-side)** — SBX playback effects under Sound Blaster Command:
+App → CTSoundCore (SndCrUSB.DLL, x86, CSoundCoreMgr with per-device param tables at +74/+881, cached feature slots ≤0x3E, GetVT1728MalcolmSCPQuery API) → CTHIDRpA → HID 'Z' frames → Malcolm MCU (op-149/150/151 registers → VT1728 DSP). Proven by fw gate: Direct suppresses DEVICE writes; Linux tools driving only these frames get full SBX on hardware.
+
+**Path 2 (host-side APO)** — KSUSBAPO64.dll (SysFx SFX/MFX/EFX CLSIDs {E9B73398…}/{41528545…}/{FE078F0E…}, all registered to this DLL — verified in registry CLSID\…\InprocServer32) loads into audiodg for the G6 endpoint (endpoint property store lists cfSB1770.ini 3×: keys {872572B3…}, {872572B4…}, {BB282A80…} — read live via MMDeviceEnumerator). Contains 50+ host EfxMod engines: CFixedSr, CPassthru, CSwap, CCrystalizer, CMultiBandEQ, CReverb, CCMSS/CCMSS3D (full upmix/surround family: CCMSSUpmix/CCMSSSurround/CCMSSRealUpmix/CMSS1Upmix/CMSS3UpmixNew/CMSS3UpmixComponent), CDTSNeoPC, CTestmix, CSimpleMix, CBassManagement, CSVMEfxMod, CVoiceFX, CPitchShift, CLimiter, CMatrixEncoder, CSpeakerEQ, CAEC/CAECRef, CMicBeam(Plus), CTHXSVM, CSTFT/CISTFT, CMonoToStereo/CInterleave/CMono2Stereo, CStereoSurround3 (×2 generations), C5D1Side↔Rear swaps, CDCOffsetRemoval, CEncoder, CAsrc, CSilenceOnFailure, CDataDump, DataInject (stub, hardcoded E_FAIL), CAudioPosition.
+
+Config files: `C:\ProgramData\Creative\APOINI\cfSB1770.ini` (G6) + `C:\Windows\System32\ksUSBaud.ini` are **obfuscated** (not single-byte XOR — brute-forced 0..255, no printable run; same scheme both files). ksusba64.sys reads only registry (no ZwCreateFile/ZwReadFile imports) — the ini files are consumed by user-mode (co-installer KsUSBDvIn64.dll!CtDevCoInstProc / APOContainer side) which pushes topology into the registry/driver. GH0390.cfg/MF0470.cfg are PLAIN-TEXT per-model speaker-EQ configs for OTHER products (H8/SBX Megatron) — not G6.
+
+SndCrUSB also embeds `<HostEffectProfiles>` XML (profile banks: Music/Movie/Gaming/SBX Default/Warm Sound/Smart Volume/Dynamic Boost/Night Mode/Clear Dialog/Stadium Surround/Clear Comms/Cinematic Action, with surround/crystalizer/xbass/svm/dlgplus/graphic_eq params; versions 1.37/1.43) — host-side profile definitions pushed down the device path; special packed feature IDs 0x10000010/0x10004080/0x1000002 (StereoDirect-family state cached at engine+25..28 via sub_42F71C).
+
+**Verdict for the Linux question (updates docs/LINUX.md):** the APO is a Windows-audio-engine integration + fallback layer; the G6's actual virtual-7.1/SBX render lives on the device DSP. Linux tools sending only the HID frames reproduce the SBX experience because path 1 is authoritative. The APO path explains why some Windows-only conveniences (per-app volumes, Windows spatial integration, host profile switching when device is busy) don't map 1:1 to Linux — but none of them are required for Direct/7.1/SBX.
 
 - fwA = v1.13 main IDB; fwB = 2025 main IDB; fwA_loader2 / fwB_loader2 = loader banks (thunk targets live here).
 - All ELF/bank images: re_analysis/fw_extract/{elf,out}/; scripts: scan_installer/pe_info/parse_all/make_elf/verify_banks.
