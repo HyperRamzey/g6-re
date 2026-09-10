@@ -334,3 +334,40 @@ asserted targets (0x428DC8, 0x40A939) in the built bytes; SHA256 765A04FE... dep
 %LOCALAPPDATA%; probe clean (init OK, 8ch, min=48 max=4800 pref=2400 gran=8).
 LESSON (added to patch_asio.py comments): NEVER copy position-dependent (RIP-relative)
 instruction bytes into a trampoline - always re-encode with rel32 recomputed for the cave.
+
+## ASIO patch v4: RAW-SAMPLE latency model (final), 2026-09-10
+
+User asked for power-of-2 sample sizes (128/256/512) - impossible in the stock ms model
+(256 samples = 5.33ms, latency stored as integer MILLISECONDS). v4 switches the whole model
+to raw samples: new 16-entry table {48,96,128,192,256,320,384,512,640,768,1024,1536,2048,3072,3840,4800}
+(all 16-multiples) in .rsrc padding @0x42FF68 (VirtualSize extended 0x2F68->0x3000 so the
+loader maps it), registry value renamed "Latency"->"LatencyS" (name relocated to 0x42FFA8,
+both lea sites 0x40AABE/0x4098E7 repointed), getBufferSize min=max=pref=raw ([+40]/[+D0]),
+gran=16, panel combobox reads the sample table directly (16 entries), panel save writes
+raw samples, advisory gate sub_40BAB8 neutered (jbe->jmp at 0x40BAFA: never fires
+spurious kAsioResetRequest at non-preferred sizes), panel scan/clamp bounds 13->16.
+[+48] ms-double is now write-only (verified: zero loads remain; only stores at 0x40992B
+init and 0x40AAB9 panel save).
+
+Bugs caught during v4 verification (all found by IDA-decompiling the BUILT file, per the
+v2 lesson - never deploy a patch without re-verifying the output):
+1. min/max patch replaced only the imul but left the magic-division seq -> everything
+   /1000'd. Fix: replace the full 16B/15B sequences incl. mul/shr/mov.
+2. dialog lea: I re-emitted the opcode with a different reg byte (4C 8D 05 = lea r8
+   instead of 4C 8D 25 = lea r12) -> loop read garbage [r12]. Fix: keep stock opcode
+   bytes, patch ONLY the rel32.
+3. pref-block store mismatch: mov ecx,[r10+28h] then mov [r9],eax - store read the WRONG
+   register (leftover esi magic constant showed up as preferred). Fix: 41 8B 42 28 (mov eax).
+4. pref-block jmp displacement: EB 02 landed at 0x409FEC (the state>=2 [+D0] branch) instead
+   of 0x409FF6 shared tail -> preferred=0 before createBuffers (what every DAW queries to
+   build its dropdown). Fix: EB 0C. This one survived static-only checks and was caught by
+   the live probe (getLatencies showing 0) - probe verification is mandatory too.
+5. pefile section-header VirtualSize offset: get_file_offset() returns the section HEADER
+   entry; VirtualSize lives at +8 (wrote over the Name field first attempt -> .rsrc vanished).
+6. Registry "LatencyS" write appeared to flip values between probes (256->512) - root
+   cause was bug 4s broken getLatencies delegation path; stable after fix.
+
+Live verification (v4 deployed to %LOCALAPPDATA%, Nuendo 15.0.30 x64):
+- probe: init OK, 8ch, min=max=pref=256 gran=16, latencies 256/256 samples
+- createBuffers(10ch, 128 samples) OK + dispose OK - power-of-2 sizes work
+- user-confirmed: works in Nuendo.

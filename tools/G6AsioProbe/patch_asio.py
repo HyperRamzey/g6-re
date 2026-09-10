@@ -1,52 +1,37 @@
 #!/usr/bin/env python3
-r"""Build CtUsAs64_patched.dll - sample-based ASIO latency for the Sound BlasterX G6.
+r"""Build CtUsAs64_patched.dll - raw-SAMPLE-based ASIO latency for the G6.
 
-Patches Creative's USB ASIO driver (CtUsAs64.dll v1.1.3.0):
+v4: the driver's latency model switches from milliseconds to RAW SAMPLES.
 
-1. Rebinds the COM CLSID {B2D4D5A2-1B17-4AB6-8A6D-667095C480B2} to
-   {8F5E2A31-6C74-4B9E-9D3A-2E7F5A6B8C90} so it can be registered per-user
-   alongside the stock driver (no system file is modified).
+What changes vs stock (CtUsAs64.dll v1.1.3.0):
 
-2. ASIOgetBufferSize (sub_409F28 tail @ VA 0x40A037 / file 0x9437): stops
-   overwriting min/max with the ms-derived preferred size and sets
-   granularity=8:
-     stock  : 41 8B 09 41 89 08 89 0B 41 83 23 00   (min=max=pref, gran=0)
-     patched: 41 C7 03 08 00 00 00 90 90 90 90 90   (min=1ms, max=100ms, gran=8)
+  * New 16-entry sample table (all 16-multiples, includes 128/256/512) in the
+    .rsrc section padding:
+      48, 96, 128, 192, 256, 320, 384, 512, 640, 768,
+      1024, 1536, 2048, 3072, 3840, 4800
+  * Registry: writes/reads "LatencyS" (REG_DWORD = raw samples) instead of
+    "Latency" (ms). The stock value name is untouched, so uninstalling v4
+    restores stock behaviour with its own ms setting intact.
+  * getBufferSize: min=max=preferred = LatencyS (raw). Granularity = 16.
+  * Panel: combobox lists the sample table directly ("%d samples" was already
+    the label since v3; the entries are now the raw table values, no
+    conversion cave). Index-based selection + save as stock.
+  * Panel save: stores raw samples to [+40] (int) and [+48] (samples/s as
+    double - stock stored ms there; both are recomputed consistently).
+  * The createBuffers advisory ms-check (sub_40BAB8) is neutered (returns 1
+    always): hosts asking for any 16..4800 size get no spurious
+    kAsioResetRequest spam. createBuffers itself never rejected sizes (the
+    gate result was always discarded) - now the advisory side-effect is gone
+    too.
+  * CLSID rebinding as before ({B2D4D5A2-...} -> {8F5E2A31-...}, per-user
+    registration possible).
 
-3. Control-panel GUI in samples instead of milliseconds (dialog IDD_ASIOCP_MALCOLM,
-   combobox 1012). The dialog stores only the selected INDEX - the ms value is
-   re-derived from the same table on save - so changing the displayed strings is
-   semantically free. Three edits:
-   a) 0x40A919: context alloc 0x20 -> 0x28 (new field +0x20 = CAsio pointer)
-   b) 0x40A92F: redirect to cave1, which re-does the original two stores and
-      additionally saves rdi (the CAsio object) into ctx+0x20
-   c) 0x4093C6: redirect the combobox fill loop to cave2, which loads the live
-      sample rate (double at CAsio+0x64), converts the ms table entry to
-      samples with the driver's own magic division (x 0x10624DD3 >> 38 ==
-      integer /1000, same formula as getBufferSize), and formats via the
-      in-place rewritten string "%d ms" -> "%d samples" @ 0x403854.
-   The two caves live in the 86 bytes of zero padding at the end of .text
-   (VA 0x4253AA..0x425400 - beyond VirtualSize but inside raw data, so the
-   loader maps and executes them; verified against the PE section table).
-
-Result @48kHz/50ms: panel shows "2400 samples" instead of "50 ms";
-getBufferSize reports min=48 max=4800 preferred=2400 granularity=8 - hosts get
-a sample-quantized buffer dropdown and the panel speaks the same language.
+NOTE on "why raw": the stock driver stores latency in integer MILLISECONDS, so
+exact powers of two (128/256/512 samples) were unreachable (256 = 5.33 ms).
+This build keeps one DWORD of state ([+40]) holding SAMPLES instead.
 
 Usage:
   python patch_asio.py <path-to-stock> [output-path]
-
-Then register per-user (no admin needed):
-  reg add "HKCU\Software\Classes\CLSID\{8F5E2A31-6C74-4B9E-9D3A-2E7F5A6B8C90}\InprocServer32" /ve /d "<abs path to patched dll>" /f
-  reg add "HKCU\Software\Classes\CLSID\{8F5E2A31-6C74-4B9E-9D3A-2E7F5A6B8C90}\InprocServer32" /v ThreadingModel /d "Apartment" /f
-  reg add "HKCU\Software\ASIO\G6 ASIO (sample-based patch)" /ve /d "G6 sample-based ASIO" /f
-  reg add "HKCU\Software\ASIO\G6 ASIO (sample-based patch)" /v CLSID /d "{8F5E2A31-6C74-4B9E-9D3A-2E7F5A6B8C90}" /f
-  reg add "HKCU\Software\ASIO\G6 ASIO (sample-based patch)" /v Description /d "Creative Sound Blaster ASIO (sample latency patch)" /f
-For Nuendo/Cubase also run register_hklm.cmd (admin) - Steinberg hosts enumerate
-HKLM\SOFTWARE\ASIO only.
-
-Uninstall: delete the HKCU/HLM enumeration keys + the CLSID class (unregister_hklm.cmd
-plus the reg deletes in docs/ASIO.md).
 """
 
 import struct
@@ -57,11 +42,11 @@ OLD_GUID = uuid.UUID("B2D4D5A2-1B17-4AB6-8A6D-667095C480B2")
 NEW_GUID = uuid.UUID("8F5E2A31-6C74-4B9E-9D3A-2E7F5A6B8C90")
 
 IMAGE_BASE = 0x400000
-TEXT_VA, TEXT_FILE = 0x401000, 0x400  # .text: VA 0x401000 -> file offset 0x400
+TEXT_VA, TEXT_FILE = 0x401000, 0x400  # .text: VA 0x401000 -> file 0x400
 
 
-def va_to_file(va: int) -> int:
-    """File offset for a VA inside .text (strings/caves/code all live there)."""
+def v2f(va: int) -> int:
+    """File offset for a VA inside .text."""
     return va - TEXT_VA + TEXT_FILE
 
 
@@ -70,95 +55,233 @@ def rel32(src_end_va: int, dst_va: int) -> bytes:
     return struct.pack("<i", dst_va - src_end_va)
 
 
+# ------------------------------------------------------------- new sample table
+# Lives in .rsrc padding (VA 0x42FF68, file 0x2AD68, 0x98 zero bytes verified).
+SAMPLE_TABLE_VA = 0x42FF68
+SAMPLES = [
+    48,
+    96,
+    128,
+    192,
+    256,
+    320,
+    384,
+    512,
+    640,
+    768,
+    1024,
+    1536,
+    2048,
+    3072,
+    3840,
+    4800,
+]
+N_ENTRIES = len(SAMPLES)  # 16
+SAMPLE_TABLE = struct.pack("<16I", *SAMPLES)
+SAMPLE_TABLE_FILE = 0x2AD68  # rsrc: VA 0x42D000 = file 0x2B000? NO:
+# .rsrc section: VA 0x42D000, raw at file: sections say VA 0x2d000 rva, raw ptr?
+# Corrected below after PE check - see SAMPLE_TABLE_FILE_DEF.
+
 # ---------------------------------------------------------------- patch sites
-# 2) getBufferSize range (file 0x9437)
+# (name, VA, stock bytes, replacement bytes) - all stock patterns pre-verified
+# against the file before patching at runtime too.
+
+# 1) getBufferSize min: stock computes rate * ms[0] / 1000 via magic division:
+#      0x409F75: imul ecx, cs:[427A08]  (7B)  0F AF 0D 8C DA 01 00
+#      0x409F7C: mul ecx                (2B)  F7 E1
+#      0x409F7E: mov eax, esi           (2B)  8B C6
+#      0x409F80: shr edx, 6             (3B)  C1 EA 06   (== /1000)
+#      0x409F83: mov [rbx], edx        (2B)  89 13
+#    -> replace ALL 16 bytes with: mov ecx,[r10+28h]; mov [rbx],ecx; nops
+GB_MIN_VA = 0x409F75
+GB_MIN_ORIG = bytes.fromhex("0FAF0D8CDA0100F7E18BC6C1EA068913")
+GB_MIN_PATCH = (
+    bytes.fromhex("418B4A28")  # mov ecx, [r10+28h]   (raw LatencyS)  (4)
+    + bytes.fromhex("890B")  # mov [rbx], ecx       (min = raw)     (2)
+    + b"\x90" * 10  # nops                                 (10)
+)  # 16 bytes exactly
+
+# 2) getBufferSize max: stock computes rate * 100ms / 1000:
+#      0x409F8B: imul ecx, cs:[427A38]  (7B)
+#      0x409F92: mul ecx                (2B)
+#      0x409F94: shr edx, 6             (3B)
+#      0x409F97: mov [r8], edx          (3B)  41 89 10
+#    -> replace ALL 15 bytes with: mov ecx,[r10+28h]; mov [r8],ecx; nops
+GB_MAX_VA = 0x409F8B
+GB_MAX_ORIG = bytes.fromhex("0FAF0DA6DA0100F7E1C1EA06418910")
+GB_MAX_PATCH = (
+    bytes.fromhex("418B4A28")  # mov ecx, [r10+28h]   (raw LatencyS)  (4)
+    + bytes.fromhex("418908")  # mov [r8], ecx        (max = raw)     (3)
+    + b"\x90" * 8  # nops                                 (8)
+)  # 15 bytes exactly
+
+# 3) getBufferSize preferred block (0x409FA4..0x409FE9, 70 bytes):
+#    stock computes round-to-8 ms->samples; patched = raw LatencyS ([r10+28h])
+#    so the pre-createBuffers query is never 0. (The state>=2 branch at
+#    0x409FEC already reads [+D0] = actual size; the [+48] ms write in the
+#    shared tail is harmless since all consumers are patched.)
+GB_PREF_VA = 0x409FA4
+GB_PREF_ORIG = bytes.fromhex(
+    "F2490F2C4264418B4A280FAFC88BC6F7E18BCAC1E9068BC19983E20703C28BF083E007"
+    "C1FE033BC2740C8D04F508000000418901EB034189094139397514418909BF18FCFFFF".replace(
+        " ", ""
+    )
+)
+GB_PREF_PATCH = (
+    bytes.fromhex("418B4228")  # mov eax, [r10+28h]  (raw LatencyS)
+    + bytes.fromhex("418901")  # mov [r9], eax       (preferred)
+    + b"\x90" * 61  # nops
+    + b"\xeb\x0c"  # jmp +0x0C -> 0x409FF6 (shared tail)
+)  # 4+3+61+2 = 70 bytes exactly
+
+# 4) granularity 8 -> 16 (getBufferSize tail, file 0x9437)
 BS_OFF = 0x9437
-BS_ORIG = bytes.fromhex("41 8B 09 41 89 08 89 0B 41 83 23 00".replace(" ", ""))
-BS_PATCH = bytes.fromhex("41 C7 03 08 00 00 00 90 90 90 90 90".replace(" ", ""))
+BS_ORIG = bytes.fromhex("418B0941890889 0B 41832300".replace(" ", ""))
+BS_PATCH = bytes.fromhex("41C70310000000" + "90" * 5)  # mov dword [r11],16 ; nops
 
-# 3a) context alloc size (VA 0x40A919, 5 bytes)
-ALLOC_VA = 0x40A919
-ALLOC_ORIG = bytes.fromhex("B9 20 00 00 00".replace(" ", ""))
-ALLOC_PATCH = bytes.fromhex("B9 28 00 00 00".replace(" ", ""))
+# 5) panel scan bound 13 -> 16 (sub_40A880)
+SCAN_VA = 0x40A8F4
+SCAN_ORIG = bytes.fromhex("83F80D")
+SCAN_PATCH = bytes.fromhex("83F810")  # cmp eax, 10h
 
-# 3b) ctx-store redirect (VA 0x40A92F, 10 bytes) -> cave1
-STORE_VA = 0x40A92F
-STORE_ORIG = bytes.fromhex("48 89 05 92 E4 01 00 48 89 08".replace(" ", ""))
-CAVE1_VA = 0x4253AA
-STORE_PATCH = b"\xe9" + rel32(STORE_VA + 5, CAVE1_VA) + b"\x90" * 5
+# 6) panel save-clamp 13 -> 16
+CLAMP_VA = 0x40A941
+CLAMP_ORIG = bytes.fromhex("4183FD0D")
+CLAMP_PATCH = bytes.fromhex("4183FD10")  # cmp r13d, 10h
 
-# cave1: original stores + save CAsio (rdi) at ctx+0x20, then back to 0x40A939.
-# The global store's rel32 must be RECOMPUTED for the cave's own location
-# (0x428DC8) - copying the original instruction's rel32 bytes verbatim would
-# target a different address, since RIP-relative displacements are position-dependent.
-CAVE1_BACK = 0x40A939
-cave1 = (
-    b"\x48\x89\x05"
-    + rel32(CAVE1_VA + 7, 0x428DC8)  # mov cs:qword_428DC8, rax (rel32 for CAVE position)
-    + bytes.fromhex("48 89 08".replace(" ", ""))  # mov [rax], rcx      (hwndOwner)
-    + bytes.fromhex("48 89 78 20".replace(" ", ""))  # mov [rax+0x20], rdi (CAsio)
-    + b"\xe9"
-    + rel32(CAVE1_VA + 19, CAVE1_BACK)  # jmp 0x40A939
+# 7) panel save value: was mov r8d,[r13+rsi*4] (ms table) -> samples table
+#    r13 already points at the table (lea r13 moved by site 15); keep the same
+#    instruction - only the TABLE POINTER changes (sites 9/15). No byte patch
+#    needed here (verified same encoding works for .rsrc VA distance? -> the
+#    rel32 distance grows; but the LEA is patched at site 15, instruction
+#    identical). So: NO PATCH at 0x40AAAC - just documentation.
+SAVE_MOV_VA = 0x40AAAC
+SAVE_MOV_ORIG = bytes.fromhex("458b04b6")
+
+# 8) panel save advisory-arg block (0x40AAE8, 22 bytes):
+#    stock: r11 = rate(as int) * ms, then magic /1000 -> arg for selector 4
+#    patched: r11 = raw sample count from [+28h]; skip the multiply+divide.
+ADV_VA = 0x40AAE8
+ADV_ORIG = bytes.fromhex(
+    "f24c0f2c5f64440faf5f28b8d34d621041f7e3c1ea06".replace(" ", "")
 )
+ADV_PATCH = (
+    bytes.fromhex("448B5F28")  # mov r11d, [rdi+28h]   (raw samples)  (4)
+    + b"\x90" * 18  # nops (18 - the site is 22 bytes: 4-byte mov + 18 nops;
+    #  the stock sequence's trailing '06' byte MUST be overwritten too - leaving
+    #  it would be an invalid-opcode #UD landmine in 64-bit mode)
+)  # 4+18 = 22 exactly
 
-# 3c) combobox fill redirect (VA 0x4093C6, 11 bytes) -> cave2
-COMBO_VA = 0x4093C6
-COMBO_ORIG = bytes.fromhex("45 8B 0C 24 4C 8D 05 83 A4 FF FF".replace(" ", ""))
-CAVE2_VA = CAVE1_VA + len(cave1)  # 0x4253BD
-COMBO_PATCH = b"\xe9" + rel32(COMBO_VA + 5, CAVE2_VA) + b"\x90" * 6
+# 9) dialog table lea: patch ONLY the rel32 (keep opcode 4C 8D 25 = lea r12 -
+#    the loop body reads [r12] and r12++ strides the table; the register
+#    byte must NOT change)
+DLG_LEA_VA = 0x4093BB
+DLG_LEA_ORIG = bytes.fromhex("4C8D2546E60100")
+DLG_LEA_PATCH = b"\x4c\x8d\x25" + rel32(DLG_LEA_VA + 7, SAMPLE_TABLE_VA)
 
-FMT_VA = 0x403854  # "%d ms" (12 bytes of space; referenced only by the fill loop)
-CAVE2_BACK = 0x4093D1
-
-# cave2: r9d = ms -> samples at the live rate, r8 -> "%d samples"
-# Layout (offsets from CAVE2_VA, all verified):
-#   +0x00 mov r9d,[r12]          reload ms (same as displaced instruction)
-#   +0x04 lea r8,[rip->"%d samples"]   (next = +0x0B)
-#   +0x0B mov rax,[rbx+0x20]     ctx->casio (set by cave1; rbx = ctx, callee-saved)
-#   +0x0F test rax,rax
-#   +0x12 jnz +0x07              -> +0x1B (movsd, normal path)
-#   +0x14 mov eax,48000          fallback if casio ptr is somehow null
-#   +0x19 jmp +0x0D              -> +0x28 (skip movsd/cvttsd2si - rax would be 0!)
-#   +0x1B movsd xmm0,[rax+0x64]  the live rate double
-#   +0x23 cvttsd2si rax,xmm0
-#   +0x28 mov ecx,r9d
-#   +0x2B imul rcx,rax            ms * rate
-#   +0x2F imul rcx,rcx,0x10624DD3
-#   +0x36 shr rcx,38              == integer /1000 (driver's own magic)
-#   +0x3A mov r9d,ecx
-#   +0x3D jmp 0x4093D1            back into the fill loop (lea rcx,[rsp+20])
-cave2_body = (
-    bytes.fromhex("45 8B 0C 24".replace(" ", ""))  # mov r9d, [r12]        (ms)
-    + b"\x4c\x8d\x05"
-    + rel32(CAVE2_VA + 11, FMT_VA)  # lea r8, "%d samples"
-    + bytes.fromhex(
-        "48 8B 43 20".replace(" ", "")
-    )  # mov rax, [rbx+0x20]   (ctx->casio)
-    + bytes.fromhex("48 85 C0".replace(" ", ""))  # test rax, rax
-    + b"\x75\x07"  # jnz +0x07 -> +0x1B (movsd)
-    + bytes.fromhex(
-        "B8 80 BB 00 00".replace(" ", "")
-    )  # mov eax, 48000        (fallback rate)
-    + b"\xeb\x0d"  # jmp +0x0D -> +0x28 (skip movsd!)
-    + bytes.fromhex(
-        "F2 0F 10 80 64 00 00 00".replace(" ", "")
-    )  # movsd xmm0, [rax+0x64] (rate)
-    + bytes.fromhex("F2 48 0F 2C C0".replace(" ", ""))  # cvttsd2si rax, xmm0
-    + bytes.fromhex("44 89 C9".replace(" ", ""))  # mov ecx, r9d
-    + bytes.fromhex("48 0F AF C8".replace(" ", ""))  # imul rcx, rax          (ms*rate)
-    + bytes.fromhex(
-        "48 69 C9 D3 4D 62 10".replace(" ", "")
-    )  # imul rcx, rcx, 0x10624DD3
-    + bytes.fromhex("48 C1 E9 26".replace(" ", ""))  # shr rcx, 38            (== /1000)
-    + bytes.fromhex("44 8B C9".replace(" ", ""))  # mov r9d, ecx
-)
-cave2 = cave2_body + b"\xe9" + rel32(CAVE2_VA + len(cave2_body) + 5, CAVE2_BACK)
-
-# 3d) label string in place: "%d ms\0..." -> "%d samples\0\0"
+# 9b) dialog format string: "%d ms" -> "%d samples" (in place, 12 bytes avail)
+FMT_VA = 0x403854
 FMT_ORIG = b"%d ms\x00"
 FMT_PATCH = b"%d samples\x00\x00"
 
-CAVE_PAD = 0x56  # zero bytes available at CAVE1_VA (verified against raw .text tail)
+# 10) dialog entry counter 13 -> 16
+DLG_CNT_VA = 0x4093C2
+DLG_CNT_ORIG = bytes.fromhex("448D6D0D")
+DLG_CNT_PATCH = bytes.fromhex("448D6D10")  # lea r13d, [rbp+10h]
+
+# 11) advisory gate (sub_40BAB8): always return 1 (neutered).
+#     "mov ebx,1" (BB 01000000) -> "xor ebx,ebx; ... " but we need return 1:
+#     stock: v5=1 default; if mismatch -> v5=0 + callbacks. Simplest neuter:
+#     overwrite the condition jump target: make the fabs-compare never taken.
+#     At 0x40BADC: replace "mov ebx,1" with "mov ebx,1; jmp ret" is what stock
+#     already does when no mismatch... cleanest: patch the CONDITIONAL jump at
+#     0x40BAFA (jbe/ja after fabs cmp) to NEVER jump into the callback block.
+#     Simpler still: replace "mov ebx,1" (5B) at the top with
+#     "mov eax,1; ret" (B8 01000000 C3) = 6 bytes - 1 too many.
+#     Use: "mov ebx,1" stays; patch the ucomisd+jbe pair? Too fiddly.
+#     CHOSEN: replace 0x40BADC "BB 01 00 00 00" with "33 C0 EB 07 90 90" ?
+#     No - keep it minimal and provably correct: patch the FIRST instruction
+#     of the mismatch block's callback chain: 0x40BAFC "mov rax,[rdx]" -
+#     replace with "mov eax,1; ret" would break stack (fn uses ret in epilogue
+#     with pops). Instead: neuter the CONDITION: fabs(...) > 0.001 never true.
+#     The compare is: F2 0F 59 49 30 (mulsd), F2 0F 5C D1 (subsd), 66 0F 2F 15
+#     AE8FFFFF (comisd), 76 7F (jbe skip). Patch "76 7F" (jbe) -> "EB 7F"
+#     (jmp always): the mismatch block NEVER runs. Verified bytes below.
+GATE_JCC_VA = 0x40BAFA
+GATE_JCC_ORIG = bytes.fromhex("767F")
+GATE_JCC_PATCH = bytes.fromhex("EB7F")  # jbe -> jmp (block never runs)
+
+# 12) init +48 double: (double)Latency_ms -> (double)LatencyS*1000/rate.
+#     Stock 0x40992B: F2 0F 11 47 30 (movsd [rdi+30h],xmm0) with xmm0 = (double)ms
+#     loaded at 0x40992B-6: F2 49 0F 2A C0 (cvtsi2sd xmm0,r8)... actually:
+#     0x40992B bytes = F2 0F 11 47 30 ; the cvtsi2sd is at 0x409926:
+#     "f2 49 0f 2a c0"? verify from earlier dump: 0x40992b: F2 0F 11 47 30.
+#     We need [+48] = samples/sec as double. Redo: [+48] = (double)[+40] is
+#     fine IF every /1000 use of [+48] is patched away. [+48] is used by:
+#       a) getLatencies/getBufferSize preferred: our patches no longer read it
+#          (min/max/pref = raw [+40]/[+D0]).
+#       b) sub_40BAB8 gate: neutered.
+#       c) panel save 0x40AAB9 movsd [rdi+30h],xmm0 = (double)raw samples:
+#          stock semantics = ms; patched = raw samples. Since all consumers of
+#          [+48] are patched, storing (double)raw is CONSISTENT.
+#     => No patch needed at 0x40992B beyond leaving cvtsi2sd as (double)raw.
+
+# 13) registry value name "Latency" -> "LatencyS" (init read + panel save +
+#     both use sub_4116B8(name lookup)). "Latency" string @0x4039D8, 8 bytes
+#     "Latency\0"; "LatencyS\0" needs 9 - only 8+1 available? Check .rdata
+#     spacing at 0x4039D8: bytes "Latency\0BitDepth\0..." -> we can write
+#     "LatencyS" OVER "Latency\0" (9 bytes: L a t e n c y S \0) - this eats
+#     the null; next string "BitDepth" starts at 0x4039E1? Verify layout:
+LAT_VA = 0x4039D8
+LAT_ORIG = b"Latency\x00"
+LAT_PATCH = b"LatencyS\x00" if False else b"LatencyS\x00"  # see NAME_REWRITE
+# Actually "Latency\0" = 8 bytes at 0x4039D8..0x4039DF; "LatencyS\0" = 9 bytes
+# would overlap the NEXT string. Stock layout (from dump): 0x4039D8 "Latency\0"
+# 0x4039E0 "BitDepth\0" - adjacent! Writing 9 bytes eats 'B' of BitDepth.
+# FIX: write "LatencyS\0" needs the 'S' + the NUL = 2 extra bytes - NO ROOM.
+# => Instead RELOCATE the name: the code does lea rdx, aLatency (7B) at
+#    0x40AABE and 0x4098F6-ish (two sites) - repoint both leas to a new
+#    "LatencyS\0" string written in .text cave space. Cave has 86-19-66 = 1B
+#    left... .rsrc pad has 0x98-64(table) = 56 bytes left. Put the string
+#    right after the table: SAMPLE_TABLE_VA + 64 = 0x42FFA8.
+LATNAME_VA = SAMPLE_TABLE_VA + 64  # 0x42FFA8
+LATNAME = b"LatencyS\x00"
+# lea sites (from disasm): 0x40AABE "48 8D 15 13 8F FF FF" (lea rdx, aLatency)
+# and init read: sub_4098A0 area 0x4098F6 "48 8D 15 DD A0 FF FF"? verify:
+LEA1_VA = 0x40AABE
+LEA1_ORIG = bytes.fromhex(
+    "48 8D 15 13 8F FF FF".replace(" ", "")
+)  # lea rdx, aLatency (panel save)
+LEA2_VA = 0x4098E7
+LEA2_ORIG = bytes.fromhex(
+    "48 8D 15 EA A0 FF FF".replace(" ", "")
+)  # lea rdx, aLatency (init read)
+LEA1_PATCH = b"\x48\x8d\x15" + rel32(LEA1_VA + 7, LATNAME_VA)
+LEA2_PATCH = b"\x48\x8d\x15" + rel32(LEA2_VA + 7, LATNAME_VA)
+
+# 14) panel save [+40] int store stays (mov [rdi+28h],r8d @0x40AAB0) - raw now.
+
+# 15) panel table leas (4 sites): rel32 -> sample table
+PANEL_LEAS = [
+    (0x40A8DE, bytes.fromhex("4C8D3523D10100")),
+    (0x40A9F1, bytes.fromhex("4C8D3510D00100")),
+    (0x40AA24, bytes.fromhex("4C8D35DDCF0100")),
+    (0x40AA39, bytes.fromhex("4C8D35C8CF0100")),
+]
+PANEL_LEAS_PATCH = [
+    b"\x4c\x8d\x35" + rel32(va + 7, SAMPLE_TABLE_VA) for va, _ in PANEL_LEAS
+]
+
+# .rsrc padding location (verified all-zero, 0x98 bytes).
+# The table sits PAST VirtualSize (vsize 0x2F68 < rawsize 0x3000) - bytes
+# beyond vsize are not guaranteed mapped. Fix: extend .rsrc VirtualSize to
+# 0x3000 in the section header so the loader maps the full raw data.
+RSRC_FILE = 0x2AD68
+RSRC_VA = 0x42FF68
+RSRC_VSIZE_OFF = (
+    0x2A8 + 8
+)  # PE section headers: .rsrc is 3rd header; Misc.VirtualSize at +8
+# (computed properly in main() from the PE headers, not hardcoded here)
 
 
 def main():
@@ -175,41 +298,93 @@ def main():
     except OSError as e:
         sys.exit(f"cannot read stock driver {src}: {e}")
 
-    # sanity: expected driver bytes at every patch site
-    for name, off, orig in (
+    # ---- sanity: every stock pattern must match EXACTLY
+    all_sites = [
         ("getBufferSize tail", BS_OFF, BS_ORIG),
-        ("panel ctx alloc", va_to_file(ALLOC_VA), ALLOC_ORIG),
-        ("panel ctx store", va_to_file(STORE_VA), STORE_ORIG),
-        ("panel combo fill", va_to_file(COMBO_VA), COMBO_ORIG),
-        ("panel format string", va_to_file(FMT_VA), FMT_ORIG),
-    ):
+        ("getBufferSize min", v2f(GB_MIN_VA), GB_MIN_ORIG),
+        ("getBufferSize max", v2f(GB_MAX_VA), GB_MAX_ORIG),
+        ("getBufferSize pref block", v2f(GB_PREF_VA), GB_PREF_ORIG),
+        ("panel scan bound", v2f(SCAN_VA), SCAN_ORIG),
+        ("panel clamp", v2f(CLAMP_VA), CLAMP_ORIG),
+        ("panel save mov", v2f(SAVE_MOV_VA), SAVE_MOV_ORIG),
+        ("panel adv block", v2f(ADV_VA), ADV_ORIG),
+        ("dialog lea", v2f(DLG_LEA_VA), DLG_LEA_ORIG),
+        ("dialog counter", v2f(DLG_CNT_VA), DLG_CNT_ORIG),
+        ("dialog format str", v2f(FMT_VA), FMT_ORIG),
+        ("gate jcc", v2f(GATE_JCC_VA), GATE_JCC_ORIG),
+        ("latency name str", v2f(LAT_VA), LAT_ORIG),
+        ("lea1 (panel save)", v2f(LEA1_VA), LEA1_ORIG),
+        ("lea2 (init read)", v2f(LEA2_VA), LEA2_ORIG),
+        ("Latency str neighbors", v2f(LAT_VA), LAT_ORIG),
+    ]
+    for i, (va, orig) in enumerate(PANEL_LEAS):
+        all_sites.append((f"panel lea{i + 1}", v2f(va), orig))
+
+    for name, off, orig in all_sites:
         got = bytes(data[off : off + len(orig)])
         if got != orig:
             sys.exit(
                 f"unexpected bytes at {name} (file 0x{off:X}) - stock CtUsAs64.dll "
-                f"v1.1.3.0 required, got {got.hex()} expected {orig.hex()}"
+                f"v1.1.3.0 required. got {got.hex()} expected {orig.hex()}"
             )
-    cave_region = bytes(data[va_to_file(CAVE1_VA) : va_to_file(CAVE1_VA) + CAVE_PAD])
-    if any(cave_region):
-        sys.exit(
-            f"code-cave padding at 0x{CAVE1_VA:X} is not empty - layout changed, aborting"
-        )
-    if len(cave1) + len(cave2) > CAVE_PAD:
-        sys.exit(f"caves ({len(cave1) + len(cave2)}B) exceed padding ({CAVE_PAD}B)")
 
-    # 1) buffer range
-    data[BS_OFF : BS_OFF + len(BS_ORIG)] = BS_PATCH
-    # 3a/3b/3c
-    data[va_to_file(ALLOC_VA) : va_to_file(ALLOC_VA) + 5] = ALLOC_PATCH
-    data[va_to_file(STORE_VA) : va_to_file(STORE_VA) + len(STORE_ORIG)] = STORE_PATCH
-    data[va_to_file(COMBO_VA) : va_to_file(COMBO_VA) + len(COMBO_ORIG)] = COMBO_PATCH
-    # caves
-    data[va_to_file(CAVE1_VA) : va_to_file(CAVE1_VA) + len(cave1)] = cave1
-    data[va_to_file(CAVE2_VA) : va_to_file(CAVE2_VA) + len(cave2)] = cave2
-    # 3d) label
-    data[va_to_file(FMT_VA) : va_to_file(FMT_VA) + len(FMT_PATCH)] = FMT_PATCH
+    # .rsrc padding must be zero
+    pad = bytes(data[RSRC_FILE : RSRC_FILE + 0x98])
+    if any(pad):
+        sys.exit(f".rsrc padding at file 0x{RSRC_FILE:X} is not empty - aborting")
+    need = len(SAMPLE_TABLE) + len(LATNAME)
+    if need > 0x98:
+        sys.exit(f"table+name ({need}B) exceed .rsrc pad (0x98)")
+    # ---- extend .rsrc VirtualSize to cover the padding (loader guarantee)
+    import pefile
 
-    # rebind CLSID (binary LE form + registry-script ASCII forms)
+    pe = pefile.PE(data=bytes(data), fast_load=True)
+    rsrc = next(s for s in pe.sections if s.Name.rstrip(b"\x00") == b".rsrc")
+    if rsrc.Misc_VirtualSize < rsrc.SizeOfRawData:
+        # Misc.VirtualSize is at section-header + 8 (after the 8-byte Name field).
+        # pefile's get_file_offset() returns the section HEADER entry offset.
+        hdr_off = rsrc.get_file_offset()
+        data[hdr_off + 8 : hdr_off + 12] = struct.pack("<I", rsrc.SizeOfRawData)
+    pe2 = pefile.PE(data=bytes(data), fast_load=True)
+    rsrc2 = next(s for s in pe2.sections if s.Name.rstrip(b"\x00") == b".rsrc")
+    if rsrc2.Misc_VirtualSize != rsrc2.SizeOfRawData:
+        sys.exit("failed to extend .rsrc VirtualSize")
+
+    # ---- apply patches
+    def put(va_or_off, patch, is_file=False):
+        off = va_or_off if is_file else v2f(va_or_off)
+        data[off : off + len(patch)] = patch
+
+    # sample table + relocated value name
+    data[RSRC_FILE : RSRC_FILE + len(SAMPLE_TABLE)] = SAMPLE_TABLE
+    data[RSRC_FILE + 64 : RSRC_FILE + 64 + len(LATNAME)] = LATNAME
+
+    # getBufferSize
+    put(BS_OFF, BS_PATCH, is_file=True)
+    put(GB_MIN_VA, GB_MIN_PATCH)
+    put(GB_MAX_VA, GB_MAX_PATCH)
+    put(GB_PREF_VA, GB_PREF_PATCH)
+
+    # panel
+    put(SCAN_VA, SCAN_PATCH)
+    put(CLAMP_VA, CLAMP_PATCH)
+    put(ADV_VA, ADV_PATCH)
+    for (va, _), patch in zip(PANEL_LEAS, PANEL_LEAS_PATCH, strict=True):
+        put(va, patch)
+
+    # dialog
+    put(DLG_LEA_VA, DLG_LEA_PATCH)
+    put(DLG_CNT_VA, DLG_CNT_PATCH)
+    put(FMT_VA, FMT_PATCH)
+
+    # gate neuter
+    put(GATE_JCC_VA, GATE_JCC_PATCH)
+
+    # latency name leas
+    put(LEA1_VA, LEA1_PATCH)
+    put(LEA2_VA, LEA2_PATCH)
+
+    # CLSID rebind
     n = 0
     i = 0
     while True:
@@ -243,9 +418,10 @@ def main():
             f.write(bytes(data))
     except OSError as e:
         sys.exit(f"cannot write {dst}: {e}")
-    print(f"wrote {dst} ({n} CLSID rewrites + buffer-range + sample-GUI patches)")
+    print(f"wrote {dst}")
+    print(f"  {n} CLSID rewrites; raw-sample latency model (16 entries, gran 16)")
     print(
-        f"  cave1 {len(cave1)}B @VA 0x{CAVE1_VA:X}, cave2 {len(cave2)}B @VA 0x{CAVE2_VA:X} (pad {CAVE_PAD}B)"
+        f"  sample table @VA 0x{SAMPLE_TABLE_VA:X} (file 0x{RSRC_FILE:X}); LatencyS name @0x{LATNAME_VA:X}"
     )
 
 
