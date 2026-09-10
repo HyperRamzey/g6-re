@@ -310,3 +310,27 @@ All caves/redirects verified by disassembling the BUILT file in IDA (instruction
 byte-identical to v1 (only the panel display changed). Cave placement note: 0x4253AA is past VirtualSize (0x243aa) but
 inside raw data (0x24400) - the loader maps full sections (dwPageSize-aligned) with X permission; verified against the
 PE headers before relying on it.
+
+## ASIO panel patch v2 -> v3: crash root cause + fix, 2026-09-10
+
+CRASH: Nuendo 15.0.30 crashed on opening settings after v2 deploy. Crash dump
+(Nuendo 15.0.30 64bit2026.9.10 17.49.38.065.dmp) parsed manually (minidump streams:
+exception CONTEXT recovered by scanning for Rip==fault addr): fault @Nuendo15.exe+0x465C1C1
+"cmp [rdi],rax" with rdi=1, crash thread's r12/r14 = CtUsAs64 .data table pointers
+(0x27A08/0x27B30 leas from sub_40A880) => the thread had entered the patched controlPanel.
+
+ROOT CAUSE (my bug): cave1 copied the original "mov cs:qword_428DC8, rax" instruction BYTES
+verbatim - but RIP-relative displacement depends on instruction position. Original rel32
+(92 E4 01 00) computed for RIP=0x40A936; at the cave location (RIP=0x4253B1) the same bytes
+target 0x443843 - PAST the image (SizeOfImage 0x31000, image ends 0x431000) = unmapped.
+Opening the panel executed cave1 => write AV => crash cascade (the dump shows the unwind-time
+fault in Nuendo's code; primary AV was the unmapped write). Hex-Rays confirmed it before deploy:
+"MEMORY[0x443843] = v10" - which I misread as cosmetic rather than a wrong-address store.
+
+FIX (v3): cave1 emits "48 89 05 <rel32>" with rel32 RECOMPUTED for the cave position:
+target 0x428DC8 - (0x4253AA+7) = 0x3A17. Verified: IDA decompile of v3 resolves
+"qword_428DC8 = v10" + both stores + the dialog reads ctx+0x20 -> CAsio -> rate correctly;
+asserted targets (0x428DC8, 0x40A939) in the built bytes; SHA256 765A04FE... deployed to
+%LOCALAPPDATA%; probe clean (init OK, 8ch, min=48 max=4800 pref=2400 gran=8).
+LESSON (added to patch_asio.py comments): NEVER copy position-dependent (RIP-relative)
+instruction bytes into a trampoline - always re-encode with rel32 recomputed for the cave.

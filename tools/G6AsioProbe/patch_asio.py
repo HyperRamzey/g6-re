@@ -87,10 +87,14 @@ STORE_ORIG = bytes.fromhex("48 89 05 92 E4 01 00 48 89 08".replace(" ", ""))
 CAVE1_VA = 0x4253AA
 STORE_PATCH = b"\xe9" + rel32(STORE_VA + 5, CAVE1_VA) + b"\x90" * 5
 
-# cave1: original stores + save CAsio (rdi) at ctx+0x20, then back to 0x40A939
+# cave1: original stores + save CAsio (rdi) at ctx+0x20, then back to 0x40A939.
+# The global store's rel32 must be RECOMPUTED for the cave's own location
+# (0x428DC8) - copying the original instruction's rel32 bytes verbatim would
+# target a different address, since RIP-relative displacements are position-dependent.
 CAVE1_BACK = 0x40A939
 cave1 = (
-    bytes.fromhex("48 89 05 92 E4 01 00".replace(" ", ""))  # mov cs:qword_428DC8, rax
+    b"\x48\x89\x05"
+    + rel32(CAVE1_VA + 7, 0x428DC8)  # mov cs:qword_428DC8, rax (rel32 for CAVE position)
     + bytes.fromhex("48 89 08".replace(" ", ""))  # mov [rax], rcx      (hwndOwner)
     + bytes.fromhex("48 89 78 20".replace(" ", ""))  # mov [rax+0x20], rdi (CAsio)
     + b"\xe9"
