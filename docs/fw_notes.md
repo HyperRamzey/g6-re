@@ -286,3 +286,27 @@ probe on patched CLSID still reports 8ch, min=48 max=4800 pref=2400 gran=8 @48k;
 user DLL copy SHA256-identical to tested build. Pitfall found: reg-script DLL-path extraction must match
 the value line (findstr /c:"REG_SZ"), not the key header (findstr "InprocServer32" matched the header and
 left the path empty - the first register script exited early; fixed).
+
+## ASIO panel GUI now shows samples (patch v2), 2026-09-10
+
+User asked for the driver control panel to use samples too. Decode of the panel (dialog IDD_ASIOCP_MALCOLM, DialogFunc
+0x4092FC -> sub_409330): WM_INITDIALOG fills combobox 1012 from the ms table dword_427A08 via sprintf "%d ms" (string
+@0x403854, referenced ONLY here); selection stores just the INDEX - sub_40A880 post-dialog maps index -> ms via the
+same table, so displayed strings are semantically free. Panel context: 0x20-byte heap alloc (@0x40A919 operator new),
+fields [+0]=owner hwnd, [+8]=cur lat idx, [+0xC]=sel lat idx, [+0x10/+0x14]=bit idx, [+0x18]=disabled hwnd; stored in
+global qword_428DC8. The dialog never touches CAsio, so the sample rate (double @CAsio+0x64) was unreachable - fixed by
+growing the context to 0x28 and stashing rdi (CAsio, live across the alloc block) at ctx+0x20 via a 19-byte cave.
+
+Patch v2 (all in patch_asio.py now, single build):
+- 0x40A919: mov ecx,0x20 -> 0x28 (context grows 8 bytes)
+- 0x40A92F: 10-byte redirect to cave1 @0x4253AA (.text zero-padding tail, 86B verified): re-does the original two
+  stores + mov [rax+0x20],rdi, jmp back to 0x40A939
+- 0x4093C6: 11-byte redirect to cave2 @0x4253BD (66B): reload ms from [r12], lea new format, load rate from
+  [ctx->casio+0x64] (null-safe fallback 48000), ms*rate with the drivers own magic division (imul 0x10624DD3, shr 38
+  == int /1000 - identical to getBufferSize math), result -> r9d, jmp back to 0x4093D1
+- 0x403854: "%d ms" -> "%d samples" in place (12 bytes available, single reference)
+All caves/redirects verified by disassembling the BUILT file in IDA (instruction-exact), deployed copy byte-verified
+(SHA256 0AE652...), probe on the v2 build: init OK, 8ch, min=48 max=4800 preferred=2400 gran=8 - driver-side patch
+byte-identical to v1 (only the panel display changed). Cave placement note: 0x4253AA is past VirtualSize (0x243aa) but
+inside raw data (0x24400) - the loader maps full sections (dwPageSize-aligned) with X permission; verified against the
+PE headers before relying on it.

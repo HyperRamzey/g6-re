@@ -94,17 +94,29 @@ That's all a patch needs to change.
 ## The patch: sample-based latency (per-user, reversible)
 
 [`tools/G6AsioProbe/patch_asio.py`](../tools/G6AsioProbe/patch_asio.py)
-builds `CtUsAs64_patched.dll` from the stock driver:
+builds `CtUsAs64_patched.dll` from the stock driver. It now patches **both
+surfaces** — the host-facing API and the driver's own control panel:
 
 1. **Rebinds the COM CLSID** `{B2D4D5A2-…}` → `{8F5E2A31-…}` (6 occurrences,
    including the ATL object map) so the copy can be registered **per-user**
-   alongside the stock driver — zero system files touched, no admin needed.
-2. **Patches 12 bytes** in the `getBufferSize` tail (file offset `0x9437`):
+   alongside the stock driver — zero system files touched.
+2. **`ASIOgetBufferSize` range** (12 bytes at file `0x9437`):
 
    | | bytes | effect |
    | --- | --- | --- |
    | stock | `41 8B 09 41 89 08 89 0B 41 83 23 00` | min=max=preferred, granularity=0 |
    | patched | `41 C7 03 08 00 00 00 90 90 90 90 90` | `mov dword [r11],8` + nops — skips the overwrite, sets granularity=8 |
+
+3. **Control panel in samples** (the panel's latency combobox): the dialog
+   stores only the selected *index* — the ms value is re-derived from the same
+   table on save — so the display strings are free to change. The panel grows
+   its context by 8 bytes to stash the CAsio pointer, and a 66-byte cave
+   converts each ms entry to samples using the live sample rate
+   (`ms × rate / 1000`, the driver's own magic division, so the numbers always
+   match `getBufferSize`). The label becomes `%d samples`
+   (`50 ms` → `2400 samples` at 48 kHz; rescales at 44.1/96/192k).
+   Both caves live in the zero padding at the end of `.text`
+   (`0x4253AA`/`0x4253BD`, 86 bytes verified empty in the stock file).
 
 Live-verified result at 48 kHz / 50 ms setting:
 
