@@ -267,3 +267,22 @@ Registered per-user: `HKCU\Software\ASIO\G6 ASIO (sample-based patch)` + `HKCU\S
 Apartment-threaded driver proxies on MTA). Modes: default dump, `--buffers` (create/dispose all ch),
 `--stream <ms>` (brief silent start/stop), `--clsid <guid>` (probe alternate build), `--set-rate <hz>`
 (driver's own setSampleRate persist), `--size <n>` (host-chosen block size).
+
+## ASIO — Nuendo/Cubase detection of the patched driver (root cause), 2026-09-10
+
+Symptom: per-user registered patched ASIO driver (HKCU\Software\ASIO + HKCU\Software\Classes\CLSID\{8F5E2A31-...})
+showed in REAPER-style hosts but NOT in Nuendo 15. Root cause (disassembly of Nuendo's baios.dll, x64,
+C:\Program Files\Steinberg\Nuendo 15\Components\baios.dll): its ASIO discovery enumerates ONLY
+HKLM\SOFTWARE\ASIO (sub_1800079A0: RegOpenKeyW(HKEY_LOCAL_MACHINE,"SOFTWARE\ASIO"); sub_180006FC0 adds only
+a C:\Program Files\Common Files\ASIO3\*.dll folder scan). No HKCU\Software\ASIO enumeration exists anywhere
+in the component. Per-entry parsing (sub_180008030): required CLSID value, optional Description (falls back
+to key name). CLSID validation (sub_180007CC0) resolves HKCR\CLSID\<clsid>\InprocServer32 (merged view -
+per-user classes ARE visible) and checks the DLL file exists (sub_180007C30 CreateFileW OPEN_EXISTING,
+System32-relative fallback). Therefore: COM class can stay per-user; ONLY the enumeration entry must be in
+HKLM. Fix (applied): HKLM\SOFTWARE\ASIO\G6 ASIO (sample-based patch) {CLSID={8F5E2A31-...}, Description=...}
+via register_hklm.cmd (admin, one time; unregister_hklm.cmd reverses). Verified with new tool
+G6AsioEnum (reproduces baios.dll discovery): 7 entries before, 8 after with the patched driver LISTED;
+probe on patched CLSID still reports 8ch, min=48 max=4800 pref=2400 gran=8 @48k; stock entry unchanged;
+user DLL copy SHA256-identical to tested build. Pitfall found: reg-script DLL-path extraction must match
+the value line (findstr /c:"REG_SZ"), not the key header (findstr "InprocServer32" matched the header and
+left the path empty - the first register script exited early; fixed).

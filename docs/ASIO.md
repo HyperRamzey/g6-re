@@ -127,20 +127,74 @@ python tools/G6AsioProbe/patch_asio.py `
   "C:\Program Files (x86)\Creative\Creative USB Native ASIO\CtUsAsio\amd64\CtUsAs64.dll" `
   "$env:LOCALAPPDATA\CtUsAs64_patched.dll"
 
-# register per-user (no admin)
+# register per-user (no admin): the COM class
 $clsid = "{8F5E2A31-6C74-4B9E-9D3A-2E7F5A6B8C90}"
 reg add "HKCU\Software\Classes\CLSID\$clsid\InprocServer32" /ve /d "$env:LOCALAPPDATA\CtUsAs64_patched.dll" /f
 reg add "HKCU\Software\Classes\CLSID\$clsid\InprocServer32" /v ThreadingModel /d "Apartment" /f
+```
+
+**Which enumeration entry you need depends on the host:**
+
+| Host family | Enumeration source | Registration needed |
+| --- | --- | --- |
+| Steinberg (Nuendo, Cubase) | **HKLM\SOFTWARE\ASIO only** (proven — see below) | `register_hklm.cmd` (admin) |
+| REAPER, most others | HKCU and/or HKLM | the per-user `HKCU\Software\ASIO` entry |
+
+For Nuendo/Cubase, run `tools/G6AsioProbe/register_hklm.cmd` as administrator
+(it adds the HKLM enumeration entry; the COM class stays per-user — Steinberg
+hosts resolve CLSIDs via HKCR, which merges per-user classes, and their CLSID
+validation only checks that the InprocServer32 DLL file exists):
+
+```powershell
+# equivalent manual commands
+reg add "HKLM\SOFTWARE\ASIO\G6 ASIO (sample-based patch)" /ve /d "G6 sample-based ASIO" /f
+reg add "HKLM\SOFTWARE\ASIO\G6 ASIO (sample-based patch)" /v CLSID /d "{8F5E2A31-6C74-4B9E-9D3A-2E7F5A6B8C90}" /f
+reg add "HKLM\SOFTWARE\ASIO\G6 ASIO (sample-based patch)" /v Description /d "Creative Sound Blaster ASIO (sample latency patch)" /f
+
+# optional (for REAPER-style hosts that read HKCU too):
 reg add "HKCU\Software\ASIO\G6 ASIO (sample-based patch)" /ve /d "G6 sample-based ASIO" /f
-reg add "HKCU\Software\ASIO\G6 ASIO (sample-based patch)" /v CLSID /d "$clsid" /f
+reg add "HKCU\Software\ASIO\G6 ASIO (sample-based patch)" /v CLSID /d "{8F5E2A31-6C74-4B9E-9D3A-2E7F5A6B8C90}" /f
 reg add "HKCU\Software\ASIO\G6 ASIO (sample-based patch)" /v Description /d "Creative Sound Blaster ASIO (sample latency patch)" /f
 
-# pick "G6 ASIO (sample-based patch)" in your DAW's ASIO driver list
+# pick "G6 ASIO (sample-based patch)" / "Creative Sound Blaster ASIO (sample latency patch)" in the DAW
 
-# uninstall: delete the two HKCU keys (or run reg delete as below)
+# uninstall: remove the enumeration entries (COM class delete too for full removal)
+reg delete "HKLM\SOFTWARE\ASIO\G6 ASIO (sample-based patch)" /f        # if added
 reg delete "HKCU\Software\ASIO\G6 ASIO (sample-based patch)" /f
 reg delete "HKCU\Software\Classes\CLSID\$clsid" /f
 ```
+
+## Why Nuendo/Cubase didn't list the patched driver (root cause, disassembly-proven)
+
+After the per-user registration, the driver appeared in REAPER-style hosts
+but **not in Nuendo 15**. The reason is in Nuendo's own ASIO host component,
+`C:\Program Files\Steinberg\Nuendo 15\Components\baios.dll` (x64) — reversed
+with IDA:
+
+| baios.dll function | What it does |
+| --- | --- |
+| `sub_180006FC0` | top-level discovery: ① scan `C:\Program Files\Common Files\ASIO3\*.dll`, ② `sub_1800079A0` |
+| `sub_1800079A0` | `RegOpenKeyW(HKEY_LOCAL_MACHINE, "SOFTWARE\\ASIO")` — **HKLM only, no HKCU enumeration anywhere** |
+| `sub_180008030` | per entry: required `CLSID` value, optional `Description` (falls back to the key name) |
+| `sub_180007CC0` | validates the CLSID: resolves `HKCR\CLSID\<clsid>\InprocServer32` (the merged view — per-user classes visible), then `sub_180007C30` checks the DLL file exists (`CreateFileW` OPEN_EXISTING; on failure retries with System32 prepended) |
+
+So an ASIO entry registered only under `HKCU\Software\ASIO` (the per-user,
+no-admin install) is **invisible to Nuendo/Cubase by design** — the CLSID and
+DLL were always fine; the enumeration entry was simply in the hive Steinberg
+hosts never read. Two consequences worth noting:
+
+- The **COM class may stay per-user** — `sub_180007CC0` resolves CLSIDs through
+  HKCR, which merges HKCU classes, and only checks the file path exists.
+  No HKLM COM registration is needed.
+- Only the **enumeration entry** needs HKLM (admin once):
+  `HKLM\SOFTWARE\ASIO\G6 ASIO (sample-based patch)` with the `CLSID` value —
+  that's exactly what `tools/G6AsioProbe/register_hklm.cmd` writes.
+
+`tools/G6AsioEnum/` reproduces this discovery path programmatically (same
+RegOpenKeyW/RegQueryValueExW sequence, same CLSID/file checks). Before the
+HKLM entry it listed 7 drivers (patched one absent); after: 8 drivers with
+`Creative Sound Blaster ASIO (sample latency patch)` listed — i.e. what
+Nuendo shows after a restart, verified without touching Nuendo's own state.
 
 ### Notes and caveats
 
