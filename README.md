@@ -227,6 +227,13 @@ Command uses.
   Command does). Enumerates contexts, features and params live, and
   dumps the DAC filter state: it's how the hidden 5th filter (NOS) was
   discovered on a real G6.
+- **[`tools/G6AsioProbe/`](tools/G6AsioProbe/)** — a minimal ASIO host that
+  loads Creative's USB ASIO driver (`CtUsAs64.dll`) live and dumps channels,
+  channel names, buffer sizes, latencies in samples, and sample-rate support.
+  Includes `patch_asio.py`, which builds a **per-user copy of the ASIO driver
+  with sample-based latency** (min/max/granularity instead of the stock
+  ms-locked min=max=preferred, granularity=0). Full details in
+  [`docs/ASIO.md`](docs/ASIO.md).
 - **[`tools/thd_test.py`](tools/G6HidSet/../G6Measure/)** — the THD+N
   loopback measurement that verifies the -2 dBFS behavior on your own unit
   (needs a 3.5mm cable from headphone-out to a line-in).

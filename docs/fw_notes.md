@@ -187,22 +187,83 @@ SndCrUSB also embeds `<HostEffectProfiles>` XML (profile banks: Music/Movie/Gami
 ## DAC FILTERS — full decode (live + firmware + datasheet + Linux ecosystem), 2026-09-09
 
 **Live enumeration (G6SoundCoreProbe, via SndCrUSB ISoundCore CLSID {495E4C24-85ED-4f19-885E-C2D01D7EA26C}, reg-free via CTIntrfu + BindHardware endpoint {0.0.0.00000000}.{b14c16b8-7fd2-492f-abbe-63ad5e3634e7}):**
+
 - Feature 0x01000001 (System_MalcolmDeviceControl), param 21 'DACFilterTypeSelect' (type 2 dword), param 22 'EnumDACFilterTypeSelect' (type 5, item size 8 = {uint idx; ushort code}), current value raw 0x06.
 - Device advertises 5 filters: idx0=code3 FastRolloffMinimumPhase, idx1=code4 SlowRolloffMinimumPhase, **idx2=code5 NonOverSampling**, idx3=code6 FastRolloffLinearPhase, idx4=code7 SlowRolloffLinearPhase. Iteration ends hr=0x80004005 at idx5.
 - GUI shows only 4 — app hardcodes skip of "NonOverSampling" by name in BaseFiltersPageViewModel.InitializeSetupDACFilter (UIFramework .../CMDViewModels/Audio/BaseFiltersPageViewModel.cs:110-130, the `if (!(text == "NonOverSampling"))` exclusion).
 
 **Transport chain (fully mapped):**
 App(.NET SoundCoreRepository) → ISoundCore::SetParamValue({feature 0x01000001, param 21}, dword code) → SndCrUSB.dll (the COM server, x86; G6 branch sets isMalcolm when VID 0x041E & PID in {0x6005,0x323C,0x3243,0x3256(G6),0x323A,0x3125,0x3247,0x30E3,0x3255}, SndCrUSB sub_42EBE4 @0x42ED8D) → CoCreate(CmdRtr, CLSID {32CD1956-569B-432F-BA27-F0BFEA458D1B} = CommandRouter.EndpointEnumeration, InprocServer32 CmdRtr64.DLL / SysWOW64\CmdRtr.DLL for x86) → KSUSBSPI (SPI provider CLSID {CAABAA19-4206-41B1-9A99-2B8917C79631} → System32\KSUSBSPI64.dll / SysWOW64\KSUSBSPI32.dll, has KsCreatePin+DeviceIoControl+HidD_SetOutputReport+SetupAPI) → ksusba64.sys + G6 HID interface. Registry: HKLM\SOFTWARE\Creative Tech\Command Router\{APO,SPI} map IID {920449A1-FFE8-434C-A2BC-C0CC1582BBD9} = "IMalcEndpoint::RebindHardware" (string found in SndCrUSB @0x41EF2C area). CTHIDRpA.dll is NOT in this chain (it's the direct-HID app path, CRT-only strings, no Malcolm names).
+
 - Note: SndCrUSB static init table at 0x401280-0x401380 holds 46 per-product param-table ctors (0x50C-byte MalcolmDeviceControl tables, first @0x63B190; feature tag 0x01000001, per-param desc {idx, 0x01000001 tag, flags, type, size, name}); 46 × 0x91B ctors (first sub_46116C @0x63B4A8) = ProcessingControl tables. 46 products share the schema; G6 personality selects via VID/PID.
 
 **Wire format (cross-verified with nils-skowasch/soundblaster-x-g6-cli Wireshark captures, doc/usb-spec.md + payloads/raw/g6_playback.txt):**
+
 - Filter SET = `5A 6C 03 00 <code-2>` + commit `5A 6C 01 01 00`, zero-padded to 64B, HID interface 4 (SET_REPORT).
-- Payload = SoundCore code − 2: 01→code3 FastMinPhase, 02→code4 SlowMinPhase, **03→code5 NOS**, 04→code6 FastLinPhase, 05→code7 SlowLinPhase. Their captures record exactly 01,02,04,05 (NOS 03 skipped — mirroring Creative's GUI exclusion); their enum `PlaybackFilter` (src/g6_cli/g6_spec/__init__.py) has only the 4 GUI values.
+- Payload = SoundCore code − 2: 01→code3 FastMinPhase, 02→code4 SlowMinPhase, **03→code5 NOS**, 04→code6 FastLinPhase, 05→code7 SlowLinPhase. Their captures record exactly 01,02,04,05 (NOS 03 skipped — mirroring Creative's GUI exclusion); their enum `PlaybackFilter` (src/g6_cli/g6_spec/**init**.py) has only the 4 GUI values.
 
 **Why NOS on the CS43131 (Cirrus Logic DS1155F2, downloaded to re_analysis/CS43131_DS1155F2.pdf):**
+
 - The chip's PCM Filter Option register 0x90000 has FILTER_SLOW_FASTB (roll-off speed), PHCOMP_LOWLATB (phase-comp/low-latency), and the **NOS bit ("NOS emulation mode")** — datasheet §5.9 'Enabling and Disabling NOS Filter' gives pop-free enable/disable sequences (soft-ramp mute → OR 0x20 into 0x90000 → unmute; disable = AND 0xDF).
 - So all 5 enumerated modes are real silicon register states: 4 = the 2×2 matrix (fast/slow × min/linear phase) of the oversampled interpolation filter (§9.1 plots show the impulse/step responses), 5th = interpolation filter bypass.
 - Engineering meaning of NOS on a delta-sigma DAC: bypasses the FIR interpolation filter; output becomes a zero-order-hold of the native samples. Effects: (a) sinc/sin(x)/x passband droop, about −3.2 dB at 20 kHz for 44.1 kHz content (classic ZOH Nyquist roll-off, grows with fs); (b) imaging artifacts above Nyquist are NOT removed (alias images fold down in any downstream resampling/processing — analog stage must absorb them); (c) minimum processing delay and no pre-ringing (the reason NOS fans prefer it: transient response with zero digital filtering artifacts); (d) on a TRUE 1-bit NOS DAC this is the "classic NOS sound", but the CS43131 is a multibit delta-sigma running an 'emulation mode' — Cirrus keeps the modulator but skips interpolation.
 - Practical G6 verdict: NOS is a legitimate listening-taste feature (softest treble, no digital filter ringing), objectively worse on measurements (droop + images), which matches Creative hiding it from the mass-market GUI while keeping it in firmware, the SoundCore param namespace, and the chip itself. Any host can set it with one frame: `5A 6C 03 00 03` + `5A 6C 01 01`.
 
 **Linux status after this finding:** soundblaster-x-g6-cli already ships `--playback-filter` with the 4 GUI filters (works on our fw 2.1.250903.1324). NOS is one missing enum value: add `NON_OVERSAMPLING = bytes.fromhex('0003')` to their PlaybackFilter — no new protocol discovery needed. No GitHub discussion/issues found about G6 DAC filters or NOS in the ecosystem repos (checked nils-skowasch issues list, searched github topics/soundblaster).
+
+## ASIO DRIVER (CtUsAsio) — complete decode + sample-based-latency patch, 2026-09-10
+
+**Driver:** Creative USB Native ASIO v1.1.3.0 (2016 build, both x86/x64), registered as
+`HKLM\SOFTWARE\ASIO\Creative Sound Blaster ASIO Device`, CLSID `{B2D4D5A2-1B17-4AB6-8A6D-667095C480B2}`,
+`C:\Program Files (x86)\Creative\Creative USB Native ASIO\CtUsAsio\{amd64\CtUsAs64.dll,i386\CtUsAsio.dll}`.
+It is a KS-streaming ASIO driver (no USB/HID of its own): CKsFilter/CKsPin wrappers talk to **ksusba64.sys**
+(the same KSUSB filter we decoded) via SetupDi + KsCreatePin. Strings confirm the Malcolm family:
+`IDD_ASIOCP_MALCOLM` control panel, PDB `c:\cbs\build\...\ctusasio\Binfre_wlh_amd64\amd64\CtUsAs64.pdb`.
+
+**Config (HKCU\Software\Creative Tech\CtUsAsio, written by panel/driver):**
+- `Latency` REG_DWORD = **milliseconds**, one of 13 values (table @0x427A08): 1,2,4,5,6,8,10,20,40,50,60,80,100
+- `BitDepth` REG_DWORD = 16 or 24 (table @0x427B30); KS-pin WFX uses 16-bit int or 24-in-32 (sub_40E11C);
+  host always sees Float32LSB either way (getChannelInfo 0x40A2A4 maps 32→ASIOSampleType 19)
+- `SampleRate` REG_QWORD = **double** Hz persisted by setSampleRate (0x40A134)
+- Found live: stale SampleRate=384000.0 + Latency=50 → getBufferSize reported min=max=pref=**19200**, gran=0
+  (a full 100ms at 384k — the root cause of absurd reported latencies in hosts).
+
+**Vtable (CAsio @0x403A60, slot = ASIO ABI order):** 3 init(0x4098A0, reads Latency/BitDepth/SampleRate),
+9 getChannels(0x409EA4 → this+216/+220), 10 getLatencies(0x409ED0 → delegates to getBufferSize, in=out),
+11 getBufferSize(0x409F28), 14 setSampleRate(0x40A134), 15 getClockSources(0x40A204 "Internal Clock"),
+18 getChannelInfo(0x40A2A4), 19 createBuffers(0x40A404), 20 disposeBuffers(0x40A63C), 21 controlPanel(0x40A880).
+
+**Multichannel — WORKS (no fix needed, config-dependent):** live probe showed **8 output channels**
+(Front/Rear/Center-Sub/Side L/R, names auto-assigned by pin channel count in sub_40B2B0:
+≤2 stereo / ≤6 adds Rear+C-Sub / >6 adds Side) + 2 input (Audio-In L/R). Channel count comes from the
+KS render pin's dataranges, which the KSUSB driver exposes per the **speaker config**:
+`HKLM\SYSTEM\...\USB\VID_041E&PID_3256&MI_00\...\Device Parameters\KSAud_Device\SPeakerConfig = 0x63F` (7.1 mask)
+⇒ with the G6 in 7.1 mode the ASIO layer exposes all 8 channels; stereo mode exposes 2.
+createBuffers(10ch @ Float32LSB) verified OK + 2s silent 8ch start/stop OK on the real device.
+If a host shows only stereo: switch the G6 to 7.1 in Sound Blaster Command first (device state, not ASIO).
+
+**Latency model (ms-quantized by design):** bufferSamples = rate × Latency_ms / 1000 exactly
+(live-verified 48/96/192/288/480 @48k for 1/2/4/6/10ms). getBufferSize hard-reports
+**min=max=preferred=that value, granularity 0** (tail @0x40A037: `mov [r9]→[r8]→[rbx]; and [r11],0`),
+so DAWs never offer a sample-count dropdown and display latency in ms.
+**But createBuffers accepts ANY size**: the ms-check (sub_40BAB8 @0x40A480, result discarded — verified
+in disassembly, no test/branch after `call`) only fires advisory callbacks
+(sampleRateDidChange → kAsioOverload → kAsioBufferSizeChange(ms) → kAsioResetRequest) and proceeds.
+
+**Patch (sample-based latency, reversible, per-user):** copy `CtUsAs64.dll` → rebind CLSID
+`{B2D4D5A2...}` → `{8F5E2A31-6C74-4B9E-9D3A-2E7F5A6B8C90}` (6 occurrences incl. ATL object map),
+patch 12 bytes at file 0x9437 (VA 0x40A037) in getBufferSize tail:
+`41 8B 09 41 89 08 89 0B 41 83 23 00` → `41 C7 03 08 00 00 00 90 90 90 90 90`
+(mov dword [r11],8 ; nops — skips the min=max=pref overwrite, sets granularity=8).
+Result (live-verified): **min=48, max=4800, preferred=2400, granularity=8** @48k/50ms —
+hosts now get a proper sample-quantized dropdown. Verified createBuffers at 128, 33 (odd!) and 4800 samples OK.
+Registered per-user: `HKCU\Software\ASIO\G6 ASIO (sample-based patch)` + `HKCU\Software\Classes\CLSID\{8F5E2A31-...}`
+(removal = delete those two keys; zero system files touched). The patched DLL is
+`re_analysis/ida_targets/CtUsAs64_patched.dll` + patch script `re_analysis/G6AsioProbe/patch_asio.py`.
+**Note:** getLatencies still reports the preferred-ms size (single-buffer model, in=out); hosts computing
+"ms" divide by the real rate — with the stale 384k cleared this is now consistent.
+
+**Tool:** `G6AsioProbe` (tools/G6AsioProbe) — minimal ASIO host (raw vtable COM, STA thread — the
+Apartment-threaded driver proxies on MTA). Modes: default dump, `--buffers` (create/dispose all ch),
+`--stream <ms>` (brief silent start/stop), `--clsid <guid>` (probe alternate build), `--set-rate <hz>`
+(driver's own setSampleRate persist), `--size <n>` (host-chosen block size).
