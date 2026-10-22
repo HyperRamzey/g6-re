@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | (a) Hidden/locked features in fw & sw? | Yes — enumerated below (fw implements more host commands and capability bits than the G6 app UI exposes; incl. a new 2025 capability bit, HRTF/speaker-model suite, I2C-passthrough/debug interface, flash-protocol commands) | High (fw disassembly + app decompile cross-checked) |
 | (b) -2dBFS SINAD bug fixed? | **No firmware fix exists or was ever attempted** — every DSP/DAC gain/drive constant is byte-identical between v1.13 (2019, pre/at ASR review) and 2.1.250903 (2025). The behavior is analog-domain (USB supply headroom at full-scale DAC drive), per the original reviewer's own attribution and confirmed by unchanged firmware | High (static analysis); live THD+N measurement prepared but not yet run (user approval pending) |
-| (c) Direct Mode + virtual 7.1 vs non-direct 7.1? | Fully traced at signal-processing level (see §C): Direct = 7.1 endpoint format retained, all SBX/HRTF/EQ effect-register writes to the VT1728 DSP suppressed by firmware (only master gain survives), SPDIF block hard-switched to passthrough; non-direct = full per-config SBX/HRTF effect engine actively renders the 7.1→stereo binaural downmix | High (both fw + app code paths traced) |
+| (c) Direct Mode + virtual 7.1 vs non-direct 7.1? | Fully traced at signal-processing level (see §C): Direct = 7.1 endpoint format retained, all SBX/HRTF/EQ effect-register writes to the VT1728 DSP suppressed by firmware (only master gain survives), SPDIF block hard-switched to passthrough; non-direct = full per-config SBX/HRTF effect engine actively renders the 7.1→stereo binaural downmix | High (both fw + app code paths traced). **Correction (§C.5):** the 7.1→stereo conversion is performed by the *host APO* (`KSUSBAPO64.dll`, `CMatrixEncoderEfxMod`), not by the device — the G6 transmits 2 channels in this mode. Node decoded, reimplemented and verified bit-exact against the DLL |
 
 ---
 
@@ -121,7 +121,7 @@ ASR review, Mar 11 2019 (amirm, audiosciencereview.com/forum/.../sound-blasterx-
 1. **Effect-write suppression.** The register-write dispatcher (2025 `sub_2000B4A4` @loc_2000B524: `if (flag@0x1001422C && op==150) return;`; v1.13 engine `sub_200070E4` with gate at `off_200074F4+12`, state struct @0x10080068) **skips every op-150 (SBX/param) DSP register write while Direct is active**, and in the v1.13 engine path also blocks re-application of op-149 EQ-band shadows. All SBX effect parameters (the 66-float op-150 table incl. Surround, Crystalizer, bass, dialog-plus, and the HRTF virtualization parameters) stop reaching the VT1728.
 2. **What survives Direct:** master gain only (SCP op 151 idx2 / engine block +264..267; thresholds 0.25/0.5/1.0/2.0/3.0) and the fixed per-config analog-path ladder (output-profile switcher 2025 `sub_2000B870` @0x2000B870: profile cmds 10/11/12 with I2C gain pairs; v1.13 `sub_20009760` SCP-37 ladder).
 3. **Per-speaker-config effect shadow tables are frozen.** The state-dump routine (loader `sub_1000FCD8` @0x1000FCD8) proves fw maintains per-config shadow blocks — 268B active-state and 384B engine blocks (base 0x10014980-family), for speaker-config slots 0 and 1 (+ stored-default fallback idx 7) — holding 0x1B op-150 params + 0x27 op-149 EQ-band params each. These stop being flushed to the DSP under Direct.
-4. **7.1 endpoint format is unaffected.** The app persists *separate* channel-mask preferences for Direct vs non-Direct (`SetSelectedDirectSpeakerChannelMask` vs `SetSelectedSpeakerChannelMask`, SpeakerConfigViewModel.cs:755-800) and re-applies on toggle; Windows sees the 8-channel (7.1) stream in both modes. The device-side fixed downmix for the physical 2-out path remains; only the *programmable DSP* layer is cut out.
+4. **7.1 endpoint format is unaffected.** The app persists *separate* channel-mask preferences for Direct vs non-Direct (`SetSelectedDirectSpeakerChannelMask` vs `SetSelectedSpeakerChannelMask`, SpeakerConfigViewModel.cs:755-800) and re-applies on toggle; Windows sees the 8-channel (7.1) stream in both modes. The device-side fixed downmix for the physical 2-out path remains; only the *programmable DSP* layer is cut out. **Superseded in part — see §C.5:** the endpoint *presents* 8 channels to applications, but the host APO converts to 2 channels before the driver, so the device-side fixed downmix never receives 8 channels in this mode.
 
 ### C.3 "Virtual 7.1" (non-Direct) — the active engine
 
@@ -133,7 +133,89 @@ ASR review, Mar 11 2019 (amirm, audiosciencereview.com/forum/.../sound-blasterx-
 
 Both modes present a 7.1 (8-channel) endpoint to Windows. **Non-direct ("Virtual 7.1 Surround")**: the 8-channel stream runs through the SBX/HRTF DSP engine — per-config effect registers are actively written and re-written (Surround/HRTF binauralization, EQ bands, Crystalizer/bass/dialog gains, profile gain patches) producing the virtual-7.1 binaural render on the 2-channel DAC output. **Direct ("Direct Mode virtual 7.1")**: firmware suppresses all op-150 SBX/HRTF effect-register writes (gate flag 0x1001422C / 0x10080068+12) — the programmable DSP effects are bypassed entirely; only master volume and the fixed per-config analog ladder remain active; and if SPDIF-Out Direct is on, the optical output is hard-switched to bit-perfect passthrough of the SPDIF-in stream (regs 0x1900B0/B4). The 7.1 "setting" then only selects the endpoint format + the device's fixed (non-programmable) speaker-config downmix — which is exactly why the app's own help text says "Direct Mode gives you audio in its purest form… All audio effects will not be applied to output."
 
+**Corrected in §C.5:** the downmix is performed on the host, not by the device.
+
 ---
+
+### C.5 Correction — the 7.1 → binaural downmix is a host APO
+
+Follow-up analysis of `KSUSBAPO64.dll` (the SysFx APO the Creative installer
+registers on this endpoint) shows that the Direct-Mode 7.1 conversion happens
+**in the Windows audio engine**, not on the device. Full write-up:
+[`docs/APO-DOWNMIXER.md`](docs/APO-DOWNMIXER.md); port and tests: [`port/`](port/);
+A/B harness against the shipping DLL: [`apo-harness/`](apo-harness/).
+
+**Chain selection.** `sub_18001ECC0` maps `(deviceId, internalFormFactor, flag)`
+to a chain id through one of four 16-byte-record tables. For Malcolm
+(`deviceId 38`):
+
+```
+dev=38 ff=1 flag=0 -> chain 37     (speakers)
+dev=38 ff=2 flag=0 -> chain 37     (headphones)
+dev=38 ff=4 flag=0 -> chain 88
+```
+
+The chain table at `0x1801CB7D0` (24-byte records `{id, node array, count}`) gives
+chain 37 @ `0x1801CBB48`:
+
+```
+chain 37 = [ 1, 15, 1 ]        # CSwap | CMatrixEncoderEfxMod | CSwap
+```
+
+Node 15 can be removed by the endpoint feature-mask property
+`{EB2FF3AE-3ED4-4F61-BFE4-4553708A402E}` pid 0 (`sub_18006FD40`, node 15 → bit
+`0x4000`; a set bit *drops* the node; if every middle node is dropped the chain
+degrades to `[0,0,0]`). The property is normally absent, so the encoder always
+runs.
+
+**The DSP.** `Process` (`0x180067D80`) takes the 8-channel stream (mask `0x63F`)
+and writes 2 channels (mask `0x3`):
+
+```
+frontL = FL + 0.707·FC + 0.707·LFE          frontR = FR + 0.707·FC + 0.707·LFE
+surL   = 0.786·BL + 0.619·BR + 0.875·SL + 0.485·SR      (+0.707·BC)
+surR   = 0.619·BL + 0.786·BR + 0.485·SL + 0.875·SR      (+0.707·BC)
+
+outL   = B(A(frontL)) + D(C(surL))
+outR   = B(A(frontR)) − D(C(surR))
+```
+
+`A..D` are second-order all-passes (`b0 == a2`, `b1 == a1`, `b2 == 1`) written in
+direct form I with `x = input + 1e-10`:
+
+| section | `b0 = a2` | `b1 = a1` | pole radius |
+|---|---|---|---|
+| A | `0x3F725269` | `0xBFF92104` | 0.99485 |
+| B | `0x3D82D384` | `0xBF567621` | 0.75289 |
+| C | `0xBE856085` | `0x3CD273D6` | 0.52340 |
+| D | `0x3F5EE547` | `0xBFEF2B02` | 0.98048 |
+
+Matrix constants live at `0x180173CD8` (0.707) and `0x1801756DC..E8`
+(0.485 / 0.619 / 0.786 / 0.875); the denormal guard is `0x1801756D8`
+(`0x2EDBE6FF`, 1.0000000134e-10). All are exact float literals, not decimal
+fractions.
+
+**Why it is not an HRTF.** Every section is exactly all-pass (measured deviation
+from unity magnitude: 3e-14). `phase(AB) − phase(CD) = −90.0°` from 100 Hz to
+12 kHz (−86.5° at 16 kHz), so `|AB + CD|` and `|AB − CD|` both stay within
+1.371–1.457 — flat, no comb filtering, clean mono fold-down. The spatial cue is
+the sign inversion of the right surround branch (broadband interaural
+anti-phase), not a pinna model.
+
+**Verification.** Calling the DLL's own `Process` under Wine (fake upstream,
+core allocated by hand) and comparing against a C port of the same code:
+
+* coefficients read out of the live object: identical;
+* 8 × 2 impulse-response matrix, 4096 frames: **0 differing samples** of 65536;
+* seven arbitrary signals (57344 samples incl. denormal-scale and DC): **0
+  differing samples**.
+
+**Consequence.** Direct Mode suppresses *device* effect writes only; an APO runs
+in `audiodg.exe`, upstream of the driver, so the binaural downmix survives Direct
+Mode. That resolves the apparent contradiction in §C.4: the device is doing
+nothing, and the spatialisation has already happened on the host. It also means a
+Linux stack that sends 8 channels to the G6 is not reproducing the Windows
+Direct-Mode path — [`port/`](port/) is the missing piece.
 
 ## D. Remaining work / open items (honest gaps)
 

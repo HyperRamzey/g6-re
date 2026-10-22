@@ -4,12 +4,27 @@
 README.md              — plain-language findings (start here)
 REPORT.md              — full technical report with evidence trail
 docs/fw_notes.md       — analysis notebook: every address, function, live test
+docs/APO-DOWNMIXER.md  — the 7.1→binaural host APO (KSUSBAPO64 CMatrixEncoder):
+                         chain selection, DSP, why it is not an HRTF, verification
+docs/ASIO.md           — ASIO driver decode + latency patch
+docs/LINUX.md          — Linux portability analysis
 fw_extract/            — our scripts to unpack G6 OTA installers → firmware banks
   scan_installer.py      scan installers for embedded container formats
   pe_info.py             PE section/string dump to identify packers
   parse_all.py           Intel-HEX parser → per-bank .bin images
   make_elf.py            wrap raw banks as loadable ELFs for IDA
   verify_banks.py        Cortex-M vector sanity check
+port/                  — C11 reimplementation of the G6's 7.1 downmixer
+  g6ct.c / g6ct.h        the DSP, bit-exact to KSUSBAPO64.dll in float32
+  g6ct_ladspa.c          LADSPA plugin (PipeWire filter-chain), f32 + f64 builds
+  g6ct_cli.c             raw 8ch f32 -> 2ch reference renderer
+  test_ir.c              IR matrix / all-pass / pole-stability unit test
+  Makefile               builds both precisions
+  verify_pipewire.sh     end-to-end check through a live PipeWire graph
+apo-harness/           — runs the real KSUSBAPO64.dll under Wine and A/Bs the port
+  harness.c              ctor + Process driven directly, fake upstream object
+  compare_port.py        8x2 impulse matrix, port vs DLL
+  compare_signal.py      arbitrary signals, port vs DLL
 tools/                 — host-side tools (talk via Creative's CTHIDRpA COM)
   G6HidProbe.cs          read-only device query (fw, serial, mode states)
   G6HidSet.cs            toggle StereoDirect / SPDIF-Out Direct

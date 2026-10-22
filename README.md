@@ -18,7 +18,7 @@ tested, and everything was restored afterwards.
 | --- | --- |
 | **Are there hidden features locked in fw/software?** | **Yes.** The firmware contains a capability-mask that switches features on/off per product. The G6's mask enables several things the app never shows you — most notably **HRTF mode for speakers**, and an engineering debug bus into the audio DSP. Some features (96 kHz optical-in passthrough, host-controlled headphone gain) are **hard-locked off** in the G6's firmware personality and reject commands. |
 | **Was the -2 dBFS / full-volume SINAD bug fixed?** | **No — and it never will be.** Every gain and DSP constant in the firmware is *byte-identical* between the version measured in the famous 2019 ASR review and today's 2025 firmware. The bug lives in the analog power-supply domain (USB power headroom at full-scale DAC drive), which firmware can't fix without a headroom trim that was never added. **Workaround: keep Windows volume below 100%.** |
-| **What does "Direct Mode" do with virtual 7.1?** | Direct Mode = 7.1 still streams over USB, but the firmware **stops writing ALL effect settings to the DSP** (surround/HRTF, EQ, everything) — only volume survives. Non-direct 7.1 = the SBX/HRTF engine actively renders 7.1 into binaural stereo. "Direct" is genuinely "no effects" — it's not just a UI promise, it's enforced in firmware. |
+| **What does "Direct Mode" do with virtual 7.1?** | Direct Mode = the firmware **stops writing ALL effect settings to the DSP** (surround/HRTF, EQ, everything) — only volume survives. Non-direct 7.1 = the SBX/HRTF engine actively renders 7.1 into binaural stereo. "Direct" is genuinely "no effects" — enforced in firmware. **But the 7.1 → 2 downmix does not happen on the device:** a host APO (`KSUSBAPO64.dll`, `CMatrixEncoderEfxMod`) already converted 8 channels to binaural stereo, so the G6 itself only ever receives 2 channels. Fully decoded, ported, and verified bit-exact — see [`docs/APO-DOWNMIXER.md`](docs/APO-DOWNMIXER.md). |
 
 ---
 
@@ -205,6 +205,28 @@ So "Direct Mode virtual 7.1" isn't virtual at all — it's **7.1 in, plain
 stereo downmix out, zero processing**. The app's own help text ("audio in
 its purest form... all audio effects will not be applied") is *enforced in
 firmware*, not just a UI behavior.
+
+### Correction (later analysis): the 8 → 2 happens on the host
+
+The firmware findings above stand, but the downmix is not done by the device.
+`KSUSBAPO64.dll` — the SysFx APO the Creative installer registers on the G6
+endpoint — contains `CMatrixEncoderEfxMod`, and for `(device 38 = Malcolm,
+form factor 2 = headphones, flag 0)` the chain table selects
+`chain 37 = SWAP | CMatrixEncoder(15) | SWAP`. That chain takes the 8-channel
+stream and emits 2 channels, so:
+
+- applications see a 7.1 endpoint, but **what the G6 transmits is stereo**
+  (confirmed on Windows: the device never receives 8 channels in this mode);
+- Direct Mode cannot disable it — an APO runs inside `audiodg.exe`, upstream
+  of the driver, so the firmware gate that suppresses *device* effect writes
+  has no authority over it;
+- this is why "Direct + 7.1" still images outside the head while the device
+  itself is doing nothing.
+
+The whole node is decoded, reimplemented in C, and verified **sample-identical**
+to the shipping DLL under Wine. Full write-up:
+[`docs/APO-DOWNMIXER.md`](docs/APO-DOWNMIXER.md); port and tests:
+[`port/`](port/); A/B harness: [`apo-harness/`](apo-harness/).
 
 ---
 

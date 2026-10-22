@@ -147,3 +147,17 @@ MatrixEncoder, SpeakerEQ, ASRC…), configured via an obfuscated
 
 So the conclusion stands: **Linux loses nothing that matters** — the DSP
 work is on the device; only the control channel needs porting.
+
+> **Correction (2026-10-22), for the Direct-Mode 7.1 headphone path only.**
+> The paragraph above is wrong about *where the 7.1 → stereo conversion
+> happens*. `KSUSBAPO64.dll` contains `CMatrixEncoderEfxMod`, and for
+> `(device 38, form factor 2 = headphones)` the chain table selects
+> `chain 37 = SWAP | CMatrixEncoder | SWAP`, which converts 8 channels to 2
+> **before the driver**. The G6 transmits stereo; the device's own downmix
+> never sees 8 channels in this mode. Direct Mode suppresses *device* effect
+> writes, and an APO in `audiodg.exe` is upstream of that, so it survives
+> Direct Mode — which is why Direct + 7.1 still images outside the head.
+> This does not invalidate the SBX/HID path (non-Direct, Sound Blaster Command
+> in control), which is still device-side. The node is fully decoded and
+> reimplemented in [`../port/`](../port/) and verified sample-identical to the
+> shipping DLL; see [`APO-DOWNMIXER.md`](APO-DOWNMIXER.md).
