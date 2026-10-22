@@ -21,6 +21,10 @@
 #include <math.h>
 #include <string.h>
 
+#if defined(__FAST_MATH__)
+#error "g6ct.c must not be built with -ffast-math (the float32 build is the bit-exact DLL replica)"
+#endif
+
 /* Bit pattern -> float -> g6ct_real.  float -> double is exact, so the
  * double build uses precisely the constant the DLL stores. */
 static g6ct_real u2r(unsigned u)
@@ -95,7 +99,7 @@ static g6ct_real ap2_run(g6ct_ap2 *s, g6ct_real x)
     return y;
 }
 
-void g6ct_process(g6ct_state *s, g6ct_real *const in[12],
+void g6ct_process(g6ct_state *s, const g6ct_real *const in[12],
                   g6ct_real *outL, g6ct_real *outR, size_t n)
 {
     const unsigned m = s->mask;
@@ -107,6 +111,17 @@ void g6ct_process(g6ct_state *s, g6ct_real *const in[12],
     const int has_ss  = (m & G6CT_SL) && (m & G6CT_SR);
     const int has_bs  = (m & G6CT_BL) && (m & G6CT_BR);
     size_t i;
+
+    /* The DLL has a stereo-bypass branch: an input mask of exactly FL|FR
+     * returns the front pair untouched (verified bit-for-bit under Wine).
+     * Mask 0, and masks with any other channel bit, run the downmixer. */
+    if (m == (G6CT_FL | G6CT_FR)) {
+        for (i = 0; i < n; i++) {
+            outL[i] = in[0] ? in[0][i] : 0;
+            outR[i] = in[1] ? in[1][i] : 0;
+        }
+        return;
+    }
 
     for (i = 0; i < n; i++) {
         g6ct_real fl = in[0] ? in[0][i] : 0;

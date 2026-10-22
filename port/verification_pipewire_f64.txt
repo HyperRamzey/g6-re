@@ -1,15 +1,14 @@
 == building (f64) ==
 == generating stimulus ==
-wrote /tmp/opencode/g6verify/in8.raw (192000, 8)
+wrote /tmp/g6ct-verify/in8.raw (192000, 8)
 == reference render (same code, outside PipeWire) ==
--rw-r--r-- 1 sanjxz sanjxz 1536000 Oct 22 22:07 /tmp/opencode/g6verify/ref2.raw
-== levels to unity, hardware output muted ==
+-rw-r--r-- 1 sanjxz sanjxz 1536000 Oct 22 23:46 /tmp/g6ct-verify/ref2.raw
+== saving sink state, hardware output muted ==
 == recording + playing ==
--rw-r--r-- 1 sanjxz sanjxz 2686976 Oct 22 22:07 /tmp/opencode/g6verify/rec2.raw
-== compare ==
+-rw-r--r-- 1 sanjxz sanjxz 2686976 Oct 22 23:46 /tmp/g6ct-verify/rec2.raw
+== compare (must be bit-exact) ==
 recorded frames 335872 reference frames 192000
-lag (frames) 73728
+lag (frames) 71680
 reference peak 0.556094
 max abs error 0.000e+00   rms error 0.000e+00
-max abs error / peak 0.000e+00
-PASS
+PASS (bit-exact)

@@ -37,4 +37,30 @@ section poles (radius must be < 1):
   surR.C    a1=+0.025690001 a2=-0.260502011  rmax=0.523400585 stable
   surR.D    a1=-1.868499994 a2=+0.870685995  rmax=0.980478371 stable
 
+surround phase (normalised L/R correlation over the IR):
+  BL  corr=-1.000000000  E(L)/E(R)=1.612365426  anti-phase
+  BR  corr=-1.000000000  E(L)/E(R)=0.620206800  anti-phase
+  SL  corr=-1.000000000  E(L)/E(R)=3.254860626  anti-phase
+  SR  corr=-1.000000000  E(L)/E(R)=0.307232817  anti-phase
+
+front isolation (max |opposite ear| / max |same ear|):
+  FL -> R 3.235e-10   FR -> L 5.341e-10   isolated
+
+back-centre (mask 0x73F):
+  corr=-1.000000000  E(L)/E(R)=1.000000000  |H(1k)|=0.707001299 (exp 0.707000017)  ok
+
+channel-mask gating (bitwise render comparison):
+  mask 0 == mask 0x1 (front path, filtered)            ok
+  mask 0x3 bypasses the DSP (raw FL/FR)                ok
+  clearing SL/SR with SL/SR silent is a no-op          ok
+  clearing SL/SR with SL/SR active changes the render  ok
+  clearing FC changes the render                       ok
+  clearing LFE changes the render                      ok
+  clearing BL/BR changes the render                    ok
+  clearing SL/SR changes the render                    ok
+  BL/BR silent with BL/BR cleared is a no-op           ok
+
+deterministic render (48000 frames, mask 0x63F):
+  hash 0x684d7c9b2515f759  expected 0x684d7c9b2515f759  ok
+
 PASSED (0 failures)

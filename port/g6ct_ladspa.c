@@ -6,8 +6,12 @@
  *     label = "g6ct_matrix_encoder" control = { "Channel Mask" = 1599 } }
  *
  * Ports: 8 audio inputs (FL FR FC LFE BL BR SL SR), 2 audio outputs
- * (OutL OutR) and one control input "Channel Mask".
+ * (OutL OutR) and one control input "Channel Mask" (0x63F = 7.1).
+ * A control value of 0 selects the 7.1 default (many hosts leave controls at
+ * zero); 0x3 selects the APO's stereo bypass (raw FL/FR).  Values outside
+ * 0..4095 are clamped.
  */
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -58,6 +62,8 @@ struct _LADSPA_Descriptor {
 #define LADSPA_PORT_CONTROL   0x4
 #define LADSPA_PORT_AUDIO     0x8
 
+#define LADSPA_HINT_BOUNDED_BELOW 0x2
+#define LADSPA_HINT_BOUNDED_ABOVE 0x4
 #define HINT_INTEGER     0x20
 
 /* ------------------------------------------------------------------ */
@@ -110,7 +116,8 @@ static const LADSPA_PortRangeHint g_hints[PORT_COUNT] = {
     { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 },
     { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 },
     { 0, 0, 0 }, { 0, 0, 0 },
-    { HINT_INTEGER, 0.0f, 4095.0f },
+    { LADSPA_HINT_BOUNDED_BELOW | LADSPA_HINT_BOUNDED_ABOVE | HINT_INTEGER,
+      0.0f, 4095.0f },
 };
 
 static void *inst(const LADSPA_Descriptor *d, unsigned long rate)
@@ -144,12 +151,24 @@ static void act(LADSPA_Handle h)
 static void run(LADSPA_Handle h, unsigned long n)
 {
     G6ctInstance *i = h;
-#ifndef G6CT_DOUBLE
-    float *in[12] = { NULL };
-#endif
 
     if (i->p[P_MASK]) {
-        unsigned m = (unsigned)(*i->p[P_MASK] + 0.5f) & 0xFFFFu;
+        const float v = *i->p[P_MASK];
+        unsigned m;
+
+        /* LADSPA cannot declare an arbitrary default, and many hosts leave
+         * controls at zero.  Mask 0 is reserved for "use the 7.1 default".
+         * Mask 0x3 is the DLL's stereo bypass (raw FL/FR); the filtered front
+         * path is selected by mask 0x1 or 0x2 (the core always passes both
+         * front channels). */
+        if (!isfinite(v) || v < 0.0f)
+            m = G6CT_MASK_7_1;
+        else if (v > 4095.0f)
+            m = 4095u;
+        else
+            m = (unsigned)(v + 0.5f);   /* v is now in 0..4095: no UB */
+        if (m == 0)
+            m = G6CT_MASK_7_1;
 
         if (m != i->mask_cache) {
             /* mask change keeps the filter history, as re-locking the
@@ -159,54 +178,65 @@ static void run(LADSPA_Handle h, unsigned long n)
         }
     }
 
-#ifndef G6CT_DOUBLE
-    in[0] = i->p[P_FL];
-    in[1] = i->p[P_FR];
-    in[2] = i->p[P_FC];
-    in[3] = i->p[P_LFE];
-    in[4] = i->p[P_BL];
-    in[5] = i->p[P_BR];
-    in[9] = i->p[P_SL];
-    in[10] = i->p[P_SR];
-#endif
-
     if (!i->p[P_OUTL] || !i->p[P_OUTR])
         return;
 
 #ifdef G6CT_DOUBLE
-    while (n) {
-        unsigned long k = n > G6CT_CHUNK ? G6CT_CHUNK : n, j;
-        g6ct_real *din[12] = { NULL };
-        int c;
+    {
+        /* Copy the connected port pointers once.  The host connects them
+         * once per session; advancing the stored pointers here would make
+         * the next run() read and write past the caller's buffers. */
+        const float *srcp[PORT_COUNT];
+        float *outl = i->p[P_OUTL], *outr = i->p[P_OUTR];
+        unsigned long off;
+        int p;
 
-        for (c = 0; c < 8; c++) {
-            const float *src = i->p[k_pmap[c]];
-            g6ct_real *dst = i->cin[c];
+        for (p = 0; p < PORT_COUNT; p++)
+            srcp[p] = i->p[p];
 
-            if (src) {
-                for (j = 0; j < k; j++)
-                    dst[j] = (g6ct_real)src[j];
-            } else {
-                memset(dst, 0, k * sizeof *dst);
+        for (off = 0; off < n; ) {
+            unsigned long k = n - off > G6CT_CHUNK ? G6CT_CHUNK : n - off, j;
+            const g6ct_real *din[12] = { NULL };
+            int c;
+
+            for (c = 0; c < 8; c++) {
+                const float *src = srcp[k_pmap[c]];
+                g6ct_real *dst = i->cin[c];
+
+                if (src) {
+                    src += off;
+                    for (j = 0; j < k; j++)
+                        dst[j] = (g6ct_real)src[j];
+                } else {
+                    memset(dst, 0, k * sizeof *dst);
+                }
+                din[k_slot[c]] = dst;
             }
-            din[k_slot[c]] = dst;
-        }
 
-        g6ct_process(&i->st, din, i->col, i->cor, (size_t)k);
+            g6ct_process(&i->st, din, i->col, i->cor, (size_t)k);
 
-        for (j = 0; j < k; j++) {
-            i->p[P_OUTL][j] = (float)i->col[j];
-            i->p[P_OUTR][j] = (float)i->cor[j];
+            for (j = 0; j < k; j++) {
+                outl[off + j] = (float)i->col[j];
+                outr[off + j] = (float)i->cor[j];
+            }
+            off += k;
         }
-        for (c = 0; c < 8; c++)
-            if (i->p[k_pmap[c]])
-                i->p[k_pmap[c]] += k;
-        i->p[P_OUTL] += k;
-        i->p[P_OUTR] += k;
-        n -= k;
     }
 #else
-    g6ct_process(&i->st, in, i->p[P_OUTL], i->p[P_OUTR], (size_t)n);
+    {
+        const float *in[12] = { NULL };
+
+        in[0] = i->p[P_FL];
+        in[1] = i->p[P_FR];
+        in[2] = i->p[P_FC];
+        in[3] = i->p[P_LFE];
+        in[4] = i->p[P_BL];
+        in[5] = i->p[P_BR];
+        in[9] = i->p[P_SL];
+        in[10] = i->p[P_SR];
+
+        g6ct_process(&i->st, in, i->p[P_OUTL], i->p[P_OUTR], (size_t)n);
+    }
 #endif
 }
 
@@ -225,7 +255,7 @@ static const LADSPA_Descriptor g_desc = {
     /* Label    */ "g6ct_matrix_encoder",
     /* Props    */ 0,
     /* Name     */ "Sound BlasterX G6 Creative MatrixEncoder 7.1 to binaural",
-    /* Maker    */ "Clean-room port of KSUSBAPO64.dll CMatrixEncoderEfxMod",
+    /* Maker    */ "Reverse-engineered port of KSUSBAPO64.dll CMatrixEncoderEfxMod",
     /* Copyright*/ "none",
     /* PortCount*/ PORT_COUNT,
     /* PortDescriptors */ g_ports,

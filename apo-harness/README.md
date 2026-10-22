@@ -45,6 +45,14 @@ and expects the callee to publish **both**:
 * `core + 0x04` = the number of valid frames. This is the loop bound — if it is
   left at zero, `Process` writes exactly one frame.
 
+`Process` starts by clearing the scratch through `core->ch[0]` for
+`12 * max_frames` floats, before it calls the upstream. The upstream call then
+overwrites `core->ch[]` with the caller's planes. If `Process` is called a
+second time without putting the scratch pointers back, that clear runs over
+the caller's input buffer (observed as a page fault at `memset` `+0xC5713` on
+the second call). The harness saves the 12 pointers after `SetMaxFrames` and
+restores them before every `Process`; that is what makes chunked calls work.
+
 Any frame count above 64 works for the tests here.
 
 ### The output descriptor
@@ -82,8 +90,10 @@ wine harness.exe "$DLL" coef
 # render the 8x2 impulse-response matrix
 wine harness.exe "$DLL" ir dll_ir        # -> dll_ir_0.raw ... dll_ir_7.raw
 
-# render an arbitrary 8-channel file (float32 interleaved)
-wine harness.exe "$DLL" run in8.raw out2.raw
+# render an arbitrary interleaved file (mask, chunk, channels are optional)
+wine harness.exe "$DLL" run in8.raw out2.raw            # 7.1, one 48000-frame call
+wine harness.exe "$DLL" run in8.raw out2.raw 0x3F 128   # 5.1, 128-frame Process calls
+wine harness.exe "$DLL" run in12.raw out2.raw 0x73F 128 12   # 12ch, BC active
 ```
 
 Paths inside the prefix use Windows syntax: `Z:\` is `/`.
@@ -93,9 +103,10 @@ Paths inside the prefix use Windows syntax: `Z:\` is `/`.
 ```sh
 python3 compare_port.py      # impulse matrix: ../port/g6ct_cli vs the DLL
 python3 compare_signal.py    # 7 signals: noise, -120 dBFS, denormals, DC, tones, step
+python3 compare_masks.py     # 25 8ch + 8 12ch masks, plus 128/256-frame chunking
 ```
 
-Both scripts exit non-zero on any sample difference. `compare_port.py` builds
+All scripts exit non-zero on any sample difference. `compare_port.py` builds
 `../port/g6ct_cli` first if you run `make` there.
 
 ## Result on the G6 build
@@ -111,6 +122,11 @@ RESULT: PASS - bit-identical to the Creative DSP
 ```
 
 Full log: [`verification_dll_wine.txt`](verification_dll_wine.txt).
+
+Mask/chunk sweep (`compare_masks.py`): 25 8-channel masks and 8 12-channel
+masks, 0 differing samples; 128/256-frame chunked `Process` calls are
+bit-identical to a single 48000-frame call. Log:
+[`verification_dll_masks.txt`](verification_dll_masks.txt).
 
 ---
 

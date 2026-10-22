@@ -8,9 +8,13 @@
  *
  *   harness.exe <KSUSBAPO64.dll> coef
  *   harness.exe <KSUSBAPO64.dll> ir <out-prefix>
+ *   harness.exe <KSUSBAPO64.dll> run <in8.raw> <out2.raw> [mask] [chunk] [channels]
  *
  * "coef" dumps the eight all-pass coefficient blocks straight out of the
- * live object; "ir" renders the 8 x 2 impulse-response matrix.
+ * live object; "ir" renders the 8 x 2 impulse-response matrix; "run" feeds
+ * an arbitrary interleaved file (channels = 8 or 12, default 8).  The
+ * optional mask defaults to 0x63F and the optional chunk (a multiple of 128)
+ * splits Process into repeated calls.
  *
  * Build: x86_64-w64-mingw32-gcc -O2 -o harness.exe harness.c
  */
@@ -119,17 +123,41 @@ int main(int argc, char **argv)
     if (!strcmp(argv[2], "run")) {
         FILE *fi, *fo;
         long sz;
-        unsigned nf, npad, k;
+        unsigned nf, npad, chunk, k, mask = 0x63F, channels = 8;
         float *in, *ol, *orr;
+        float *plane[MAXCH] = { NULL };
+        void *scratch[MAXCH];
 
         if (argc < 5) { fprintf(stderr, "run needs <in8.raw> <out2.raw>\n"); return 2; }
+        if (argc > 5)
+            mask = (unsigned)strtoul(argv[5], NULL, 0);
+        chunk = argc > 6 ? (unsigned)strtoul(argv[6], NULL, 0) : 0;
+        if (argc > 7) {
+            channels = (unsigned)strtoul(argv[7], NULL, 0);
+            if (channels != 8 && channels != 12) {
+                fprintf(stderr, "channels must be 8 or 12\n");
+                return 2;
+            }
+        }
+
         fi = fopen(argv[3], "rb");
         if (!fi) { perror(argv[3]); return 1; }
         fseek(fi, 0, SEEK_END); sz = ftell(fi); rewind(fi);
-        nf = (unsigned)(sz / (8 * 4));
+        if (sz % (long)(channels * 4)) {
+            fprintf(stderr, "input size is not a multiple of %u channels\n", channels);
+            return 2;
+        }
+        nf = (unsigned)(sz / (channels * 4));
         npad = (nf + 127u) & ~127u;
-        in = calloc((size_t)npad * 8, sizeof(float));
-        if (fread(in, sizeof(float), (size_t)nf * 8, fi) != (size_t)nf * 8) return 1;
+        if (chunk == 0)
+            chunk = npad;
+        if (chunk % 128u || chunk > npad) {
+            fprintf(stderr, "chunk must be a multiple of 128 and <= %u\n", npad);
+            return 2;
+        }
+        in = calloc((size_t)npad * channels, sizeof(float));
+        if (!in) return 1;
+        if (fread(in, sizeof(float), (size_t)nf * channels, fi) != (size_t)nf * channels) return 1;
         fclose(fi);
 
         obj = new_object(base);
@@ -137,31 +165,84 @@ int main(int argc, char **argv)
         *(void **)((char *)obj + 8) = (void *)g_upstream;
 
         ifmt = (FMT *)((char *)obj + 32);
-        ifmt->rate = 48000; ifmt->channels = 8; ifmt->mask = 0x63F; ifmt->bits = 32;
+        ifmt->rate = 48000; ifmt->channels = channels; ifmt->mask = mask; ifmt->bits = 32;
         ofmt = (FMT *)((char *)obj + 56);
         ofmt->rate = 48000; ofmt->channels = 2; ofmt->mask = 0x3; ofmt->bits = 32;
 
         if (((long (*)(void *, unsigned))(base + RVA_SETMAXFRAMES))(obj, npad) != 0) return 1;
+        {
+            /* SetMaxFrames points the core's 12 channel slots at its scratch.
+             * The fake upstream replaces them with the caller's planes during
+             * Process; the next Process starts by clearing the scratch
+             * through slot 0, so restore the scratch pointers first. */
+            void *core = *(void **)((char *)obj + 536);
+
+            for (k = 0; k < MAXCH; k++)
+                scratch[k] = *(void **)((char *)core + 8 + 8 * k);
+        }
 
         ol = calloc(npad, sizeof(float));
         orr = calloc(npad, sizeof(float));
-        for (k = 0; k < MAXCH; k++) g_plane[k] = calloc(npad, sizeof(float));
-        for (k = 0; k < npad; k++) {
-            g_plane[0][k] = in[k*8+0]; g_plane[1][k] = in[k*8+1];
-            g_plane[2][k] = in[k*8+2]; g_plane[3][k] = in[k*8+3];
-            g_plane[4][k] = in[k*8+4]; g_plane[5][k] = in[k*8+5];
-            g_plane[9][k] = in[k*8+6]; g_plane[10][k]= in[k*8+7];
+        for (k = 0; k < MAXCH; k++) {
+            plane[k] = calloc(npad, sizeof(float));
+            if (!plane[k]) return 1;
+            g_plane[k] = plane[k];
         }
-        memset(&od, 0, sizeof od);
-        od.frames = npad; od.ch[0] = ol; od.ch[1] = orr;
-        hr = ((long (*)(void *, unsigned, OUTDESC *))(base + RVA_PROCESS))(obj, npad, &od);
-        printf("run: Process -> 0x%lx  frames=%u written=%u\n", (unsigned long)hr, npad, od.written);
-        if (hr != 0) return 1;
+        for (k = 0; k < npad; k++) {
+            static const int slot8[8]  = { 0, 1, 2, 3, 4, 5, 9, 10 };
+            static const int slot12[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+            unsigned c;
+
+            for (c = 0; c < channels; c++)
+                g_plane[channels == 8 ? slot8[c] : slot12[c]][k] = in[k*channels+c];
+        }
+
+        {
+            unsigned off;
+
+            for (off = 0; off < npad; off += chunk) {
+                unsigned kk = npad - off < chunk ? npad - off : chunk;
+
+                for (k = 0; k < MAXCH; k++)
+                    g_plane[k] = plane[k] ? plane[k] + off : NULL;
+                {
+                    void *core = *(void **)((char *)obj + 536);
+
+                    for (k = 0; k < MAXCH; k++)
+                        *(void **)((char *)core + 8 + 8 * k) = scratch[k];
+                }
+                memset(&od, 0, sizeof od);
+                od.frames = kk;
+                od.ch[0] = ol + off;
+                od.ch[1] = orr + off;
+                hr = ((long (*)(void *, unsigned, OUTDESC *))(base + RVA_PROCESS))(obj, kk, &od);
+                if (hr != 0 || od.written != kk) {
+                    printf("Process -> 0x%lx at off %u: written=%u (expected %u)\n",
+                           (unsigned long)hr, off, od.written, kk);
+                    return 1;
+                }
+            }
+        }
+        printf("run: mask=0x%03X chunk=%u Process -> ok  frames=%u\n",
+               mask, chunk, npad);
 
         fo = fopen(argv[4], "wb");
         if (!fo) { perror(argv[4]); return 1; }
-        for (k = 0; k < npad; k++) { float pr[2]; pr[0]=ol[k]; pr[1]=orr[k]; fwrite(pr,4,2,fo); }
-        fclose(fo);
+        for (k = 0; k < npad; k++) {
+            float pr[2];
+
+            pr[0] = ol[k];
+            pr[1] = orr[k];
+            if (fwrite(pr, sizeof(float), 2, fo) != 2) {
+                perror(argv[4]);
+                return 1;
+            }
+        }
+        if (fclose(fo) != 0) { perror(argv[4]); return 1; }
+        free(in);
+        for (k = 0; k < MAXCH; k++) free(plane[k]);
+        free(ol);
+        free(orr);
         return 0;
     }
 

@@ -27,13 +27,15 @@
  * Arithmetic precision.
  *
  * The original module runs in IEEE-754 single precision, and the default
- * build reproduces it bit for bit (see verification_dll_wine.txt).  Defining
- * G6CT_DOUBLE at compile time switches the coefficients, the state and the
- * accumulation to double.  The coefficients are still the exact float values
- * the Creative constructor writes (promoted losslessly), so the transfer
- * function is unchanged - only the arithmetic noise floor moves down, from
- * about -140 dBFS to below -300 dBFS.  The two builds are separate objects
- * (*.so) because their symbols have the same names but different types.
+ * build reproduces it bit for bit (see ../apo-harness/verification_dll_wine.txt).
+ * Defining G6CT_DOUBLE at compile time switches the coefficients, the state
+ * and the accumulation to double.  The coefficients are still the exact float
+ * values the Creative constructor writes (promoted losslessly), so the
+ * transfer function is unchanged - only the arithmetic noise floor moves
+ * down.  Measured against an 80-bit reference render, the residual is
+ * -104.0 dBFS rms / -93.0 dBFS peak for float32 and -164.0 dBFS rms /
+ * -147.7 dBFS peak for float64.  The two builds are separate objects (*.so)
+ * because their symbols have the same names but different types.
  */
 #ifdef G6CT_DOUBLE
 typedef double g6ct_real;
@@ -91,7 +93,7 @@ void g6ct_reset(g6ct_state *s);
  * A NULL pointer is treated as silence for that channel.
  * outL/outR receive n frames each.
  */
-void g6ct_process(g6ct_state *s, g6ct_real *const in[12],
+void g6ct_process(g6ct_state *s, const g6ct_real *const in[12],
                   g6ct_real *outL, g6ct_real *outR, size_t n);
 
 /* Arithmetic precision this translation unit was built with. */

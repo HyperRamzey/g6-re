@@ -51,21 +51,26 @@ behind the listener. Details and measurements: §4 of the analysis document.
 | File | Purpose |
 |---|---|
 | `g6ct.h` / `g6ct.c` | the port; libm only |
-| `g6ct_cli.c` → `g6ct_cli`, `g6ct_cli64` | raw interleaved f32 8ch → 2ch reference renderer |
+| `g6ct_cli.c` → `g6ct_cli`, `g6ct_cli64` | raw interleaved f32 8ch/12ch → 2ch reference renderer |
 | `g6ct_ladspa.c` → `libg6ct_ladspa.so`, `libg6ct_ladspa_f64.so` | LADSPA plugin for PipeWire |
-| `test_ir.c` → `test_ir`, `test_ir64` | IR matrix, all-pass magnitude, pole stability |
+| `test_ir.c` → `test_ir`, `test_ir64` | IR matrix, phase, mask gating, DLL-verified golden hash |
+| `test_ladspa.c` → `test_ladspa`, `test_ladspa64` | connects ports once, multi-block host test + control semantics |
 | `verify_pipewire.sh [f32\|f64]` | end-to-end test through a live PipeWire graph |
-| `verification_unit_test*.txt`, `verification_pipewire*.txt` | saved results |
+| `verification_unit_test*.txt`, `verification_ladspa_test*.txt`, `verification_pipewire*.txt` | saved results |
 
 ## Build
 
 ```sh
 make            # everything, both precisions
-make check      # unit tests, writes verification_unit_test*.txt
+make check      # unit + LADSPA host tests, writes verification_*.txt
+make asan       # ASan/UBSan host tests (f32 and f64)
 ```
 
-`-ffp-contract=off` is in the default flags: it stops the compiler from fusing
-multiply-adds, so the arithmetic keeps the same order as the original.
+`-std=c11 -ffp-contract=off -fno-fast-math` are kept in a separate
+`G6CT_CFLAGS` and appended *after* `$(CFLAGS)`: exporting
+`CFLAGS="-O2 -march=native"` still produces the bit-exact build (verified: 0
+differing samples against the DLL). Without `-ffp-contract=off` the compiler
+fuses multiply-adds and the replica diverges.
 
 ### Two precisions
 
@@ -94,9 +99,15 @@ both builds (~600× realtime).
 The double build uses the same coefficients (each is the exact float the
 constructor writes, promoted losslessly) and the same operation order. It is a
 separate `.so` because the symbols have the same names with a different scalar
-type. `g6ct_process` takes `g6ct_real *const in[12]`, indexed by WAVE bit
+type. `g6ct_process` takes `const g6ct_real *const in[12]`, indexed by WAVE bit
 position: 0 FL, 1 FR, 2 FC, 3 LFE, 4 BL, 5 BR, 6 FLC, 7 FRC, 8 BC, 9 SL, 10 SR,
 11 TC. A `NULL` channel is silence.
+
+A mask of exactly `0x3` (FL|FR) is the DLL's **stereo bypass**: the front pair
+is copied through with no filtering. `0x0`, `0x1`, `0x2` and every mask with an
+additional channel bit run the downmixer ('0x0' and '0x1' both give the filtered
+front pair). This was found by the mask sweep against the DLL and is covered by
+`test_ir`.
 
 **Linear phase was deliberately not implemented.** A linear-phase all-pass is a
 pure delay: `AB` would collapse onto `CD`, the quadrature would vanish and the
@@ -139,7 +150,11 @@ context.modules = [
 
 Channel positions must be `RL RR` for the rear pair — PipeWire parses `BL`/`BR`
 as unknown and remixes them. `Channel Mask` is a control: `1599` (0x63F) is 7.1,
-`255` (0xFF) is FL FR FC LFE BL BR FLC FRC.
+`255` (0xFF) is FL FR FC LFE BL BR FLC FRC. The control is integer and bounded
+to 0..4095; `0` selects the 7.1 default (hosts that leave controls at zero get
+the full downmix), `3` is the stereo bypass (raw FL/FR), and values outside the
+range are clamped. A malformed (`NaN`/negative/infinite) control also falls back
+to 7.1.
 
 The plugin is rate independent, like the original (which only checks that the
 rate is within 44100–192000). PipeWire runs it at the graph rate.
@@ -294,25 +309,44 @@ offline reference is unchanged (residual −223.6 dBFS, correlation 1.00000000).
 
 ## Verification
 
-```
-$ ./test_ir | tail -1
-PASSED (0 failures)
-$ ./test_ir64 | tail -1
-PASSED (0 failures)
+```sh
+make check
 ```
 
+runs the unit tests and the LADSPA host tests (saved in
+`verification_unit_test*.txt` / `verification_ladspa_test*.txt`). The unit test
+checks the IR magnitudes, the surround phase (L/R correlation −1.000000000),
+front-ear isolation, all pole radii, every mask bit, the `0x3` stereo bypass,
+and a deterministic 1 s render. That render has a committed FNV-1a hash:
+
+| build | hash |
+|---|---|
+| float32 | `0x684d7c9b2515f759` |
+| float64 | `0x5f78798536b3fa72` |
+
+The float32 hash is the **DLL's own output hash** for the same input, so it is
+a DLL-free regression oracle for the bit-exact build.
+
+`test_ladspa` connects all ports once (as a normal host does) and runs six
+blocks, including a second 4096-frame block; the original f64 wrapper advanced
+its stored pointers and overran there. `make asan` builds both host tests with
+ASan+UBSan and passes with no reports.
+
 `verify_pipewire.sh` mutes the hardware sink for the run (the monitor tap is
-pre-mute, so the measurement is unaffected) and compares a 4 s noise+tones
-stimulus against the reference render:
+pre-mute, so the measurement is unaffected), saves and restores all sink
+volumes/mutes, and requires **bit-exact** output:
 
 ```
 recorded frames 335872 reference frames 192000
+lag (frames) 71680
 max abs error 0.000e+00   rms error 0.000e+00
-PASS
+PASS (bit-exact)
 ```
 
-Against the real DLL (Wine): 0 differing samples across the 8×2 impulse matrix
-and seven arbitrary signals. See
+Against the real DLL (Wine): 0 differing samples across the 8×2 impulse matrix,
+seven arbitrary signals, **25 8-channel masks and 8 12-channel masks** (including
+BC, FLC/FRC and the `0x3` bypass) and 128/256-frame chunked Process calls
+(chunked output is bit-identical to a single call). See
 [`../apo-harness/verification_dll_wine.txt`](../apo-harness/verification_dll_wine.txt).
 
 ## Notes

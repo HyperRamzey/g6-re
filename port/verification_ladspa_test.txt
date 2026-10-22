@@ -1,0 +1,19 @@
+LADSPA host test (float32)
+  mask hint bounded 0..4095, integer: ok
+  block 1 (4096 frames)                  ok
+  block 2 (4096 frames, second call)     ok
+  block 3 (1000 frames)                  ok
+  block 4 (257 frames)                   ok
+  block 5 (1024 frames)                  ok
+  block 6 (13 frames)                    ok
+  control 0 -> 7.1 default               ok
+  control 0x3 -> stereo bypass           ok
+  control 1599 -> 7.1                    ok
+  control NaN -> 7.1 default             ok
+  control -1 -> 7.1 default              ok
+  control -inf -> 7.1 default            ok
+  control +inf -> 7.1 default            ok
+  control 1e30 -> 4095 clamp             ok
+  control 4095.9 -> 4095 clamp           ok
+  unconnected control -> 7.1             ok
+PASSED (0 failures)

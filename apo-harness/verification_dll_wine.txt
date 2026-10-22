@@ -44,3 +44,59 @@ step           8192 samples  rms(dll)=  1.42131  max|err|=0.000e+00  bit-diffs=0
 TOTAL differing samples: 0
 WORST abs error: 0.000000e+00
 RESULT: PASS - bit-identical
+
+## 4. Channel-mask sweep and Process chunking (2026-10-22T20:57:02Z)
+
+Command: python3 compare_masks.py
+Input: 48000 frames, deterministic LCG, 8ch and 12ch interleaved float32
+
+mask sweep (DLL vs port, single Process call):
+ 8ch mask 0x63F  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x03F  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x003  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x000  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x60F  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x30F  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x030  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x600  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x61F  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x43F  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x0FF  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x73F  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x001  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x002  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x007  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x00F  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x013  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x103  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x203  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x303  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x403  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x603  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x703  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x63B  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+ 8ch mask 0x63D  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+12ch mask 0x63F  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+12ch mask 0x73F  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+12ch mask 0x7FF  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+12ch mask 0x03F  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+12ch mask 0x003  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+12ch mask 0x000  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+12ch mask 0x07F  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+12ch mask 0x6FF  bit-diffs      0/96000  max|err| 0.000e+00  PASS
+
+Process chunking (DLL single vs DLL chunked vs port):
+ 8ch mask 0x63F chunk 128  single-vs-chunked 0/96000  port 0/96000  PASS
+ 8ch mask 0x03F chunk 256  single-vs-chunked 0/96000  port 0/96000  PASS
+ 8ch mask 0x003 chunk 128  single-vs-chunked 0/96000  port 0/96000  PASS
+12ch mask 0x73F chunk 128  single-vs-chunked 0/96000  port 0/96000  PASS
+12ch mask 0x7FF chunk 128  single-vs-chunked 0/96000  port 0/96000  PASS
+
+PASS - all masks and chunk sizes bit-identical
+
+Note: mask 0x3 (FL|FR) is the DLL's stereo bypass: raw FL/FR, bit-for-bit,
+not the filtered front pair. Masks 0x0/0x1/0x2 do run the all-pass. The port
+implements the bypass (test_ir covers it).
+Chunked Process needs the 12 core channel pointers restored to the
+SetMaxFrames scratch before each call; without that the initial 12*max_frames
+clear runs over the caller's input (page fault at memset +0xC5713).
