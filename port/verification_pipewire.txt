@@ -1,0 +1,15 @@
+== building ==
+== generating stimulus ==
+wrote /tmp/opencode/g6verify/in8.raw (192000, 8)
+== reference render (same code, outside PipeWire) ==
+-rw-r--r-- 1 sanjxz sanjxz 1536000 Oct 22 13:39 /tmp/opencode/g6verify/ref2.raw
+== levels to unity ==
+== recording + playing ==
+-rw-r--r-- 1 sanjxz sanjxz 2686976 Oct 22 13:39 /tmp/opencode/g6verify/rec2.raw
+== compare ==
+recorded frames 335872 reference frames 192000
+lag (frames) 73728
+reference peak 0.556095
+max abs error 0.000e+00   rms error 0.000e+00
+max abs error / peak 0.000e+00
+PASS

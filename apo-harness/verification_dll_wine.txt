@@ -1,0 +1,46 @@
+# Verification: Linux port vs. real KSUSBAPO64.dll (Creative CMatrixEncoderEfxMod)
+# generated 2026-10-22T19:04:11Z
+# host: Linux 7.2.11-1-cachyos x86_64, wine wine-11.20, target: Windows 10 prefix
+
+## 1. Coefficient blocks read from the live object after its own ctor
+
+module base 00006FFFFC280000
+ctor: +128=1 +92=128 +520=1 +524=0 core(+536)=0000000000000000
+block 0 @0E8: 3F725269 BFF92104 3F800000 BFF92104 3F725269 00000000 00000000 00000000 00000000
+block 1 @10C: 3D82D384 BF567621 3F800000 BF567621 3D82D384 00000000 00000000 00000000 00000000
+block 2 @130: BE856085 3CD273D6 3F800000 3CD273D6 BE856085 00000000 00000000 00000000 00000000
+block 3 @154: 3F5EE547 BFEF2B02 3F800000 BFEF2B02 3F5EE547 00000000 00000000 00000000 00000000
+block 4 @178: 3F725269 BFF92104 3F800000 BFF92104 3F725269 00000000 00000000 00000000 00000000
+block 5 @19C: 3D82D384 BF567621 3F800000 BF567621 3D82D384 00000000 00000000 00000000 00000000
+block 6 @1C0: BE856085 3CD273D6 3F800000 3CD273D6 BE856085 00000000 00000000 00000000 00000000
+block 7 @1E4: 3F5EE547 BFEF2B02 3F800000 BFEF2B02 3F5EE547 00000000 00000000 00000000 00000000
+
+## 2. 8x2 impulse response matrix, DLL vs port (g6ct_cli), 4096 frames @48k, mask 0x63F
+
+ch name     max|err|  bit-diffs  first taps (L)
+ 0 FL      0.000e+00          0  +0.060467 -0.748967 +0.396100
+ 1 FR      0.000e+00          0  +0.000000 -0.000000 +0.000000
+ 2 FC      0.000e+00          0  +0.042750 -0.529520 +0.280043
+ 3 LFE     0.000e+00          0  +0.042750 -0.529520 +0.280043
+ 4 BL      0.000e+00          0  -0.178277 +0.071635 +0.674108
+ 5 BR      0.000e+00          0  -0.140399 +0.056415 +0.530882
+ 6 SL      0.000e+00          0  -0.198464 +0.079746 +0.750439
+ 7 SR      0.000e+00          0  -0.110005 +0.044202 +0.415957
+
+TOTAL differing samples: 0
+WORST abs error: 0.000000e+00
+RESULT: PASS - bit-identical to the Creative DSP
+
+## 3. Arbitrary-signal comparison, DLL vs port
+
+noise_full     8192 samples  rms(dll)=  1.14583  max|err|=0.000e+00  bit-diffs=0
+noise_quiet    8192 samples  rms(dll)=  0.00000  max|err|=0.000e+00  bit-diffs=0
+denormal       8192 samples  rms(dll)=  0.00000  max|err|=0.000e+00  bit-diffs=0
+dc_offset      8192 samples  rms(dll)=  0.25581  max|err|=0.000e+00  bit-diffs=0
+sine_all       8192 samples  rms(dll)=  0.69934  max|err|=0.000e+00  bit-diffs=0
+one_sided      8192 samples  rms(dll)=  0.01914  max|err|=0.000e+00  bit-diffs=0
+step           8192 samples  rms(dll)=  1.42131  max|err|=0.000e+00  bit-diffs=0
+
+TOTAL differing samples: 0
+WORST abs error: 0.000000e+00
+RESULT: PASS - bit-identical
