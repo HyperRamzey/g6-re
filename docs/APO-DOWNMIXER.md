@@ -302,8 +302,12 @@ node: `g6ct.c` / `g6ct.h` (core), `g6ct_ladspa.c` (LADSPA plugin for
 
 The default build is float32 and reproduces the DLL bit for bit. `-DG6CT_DOUBLE`
 builds a second object with the same coefficients and operation order in double
-precision; it is *not* bit-identical to the DLL (it differs by up to 9.4 × 10⁻⁷,
-which is the DLL's own rounding error) but is the more accurate renderer.
+precision; it is *not* bit-identical to the DLL — on a 10 s 8-channel signal the
+two builds null to −86.4 dBFS peak / −100.0 dBFS rms (958373 of 960000 samples
+differ), because the DLL's float32 rounding accumulates through the r = 0.99485
+pole. Against an 80-bit reference the float32 build sits 91.9 dB below the
+signal and the float64 build 151.9 dB below — a 60 dB improvement. Numbers and
+method in [`../port/README.md`](../port/README.md#two-precisions).
 
 Linear phase was deliberately not implemented: a linear-phase all-pass is a pure
 delay, which would make `AB ≡ CD`, destroy the quadrature above and reintroduce

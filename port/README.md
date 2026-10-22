@@ -72,7 +72,24 @@ multiply-adds, so the arithmetic keeps the same order as the original.
 | build | flag | plugin | behaviour |
 |---|---|---|---|
 | float32 (default) | — | `libg6ct_ladspa.so` | bit-identical to `KSUSBAPO64.dll` |
-| float64 | `-DG6CT_DOUBLE` | `libg6ct_ladspa_f64.so` | same transfer function, ~120 dB lower arithmetic noise |
+| float64 | `-DG6CT_DOUBLE` | `libg6ct_ladspa_f64.so` | same transfer function, 60 dB closer to an exact render |
+
+Measured against an 80-bit (`long double`) reference running the same
+coefficients in the same order — 1 s, front-left, random 0.25 (−12.07 dBFS rms):
+
+| build | error rms | error peak | below signal |
+|---|---|---|---|
+| float32 | −104.00 dBFS | −92.96 dBFS | 91.9 dB |
+| float64 | −164.01 dBFS | −147.69 dBFS | 151.9 dB |
+
+So float64 removes 60.0 dB of arithmetic noise. It is **not** bit-identical to
+the DLL: nulling the two builds on a hot 10 s 8-channel signal gives peak
+−86.4 dBFS / rms −100.0 dBFS, and 958373 of 960000 samples differ. That
+divergence is the DLL's own float32 rounding leaking through the r = 0.99485
+pole, so it accumulates rather than sitting at a fixed floor, and it does not
+shrink with level. Use float32 to reproduce Windows exactly; use float64 for the
+cleanest render. CPU cost is nil — 60 s of 8-channel audio renders in ~100 ms in
+both builds (~600× realtime).
 
 The double build uses the same coefficients (each is the exact float the
 constructor writes, promoted losslessly) and the same operation order. It is a
@@ -126,6 +143,29 @@ as unknown and remixes them. `Channel Mask` is a control: `1599` (0x63F) is 7.1,
 
 The plugin is rate independent, like the original (which only checks that the
 rate is within 44100–192000). PipeWire runs it at the graph rate.
+
+## Players
+
+Any client can render through the chain by selecting the sink. For mpv:
+
+```ini
+# ~/.config/mpv/mpv.conf
+audio-device=pipewire/g6_ct_downmix
+```
+
+The device name comes from `mpv --audio-device=help`. Verified with mpv 0.41
+(`--ao=pipewire`) by measuring the hardware sink's monitor — the same silent tap
+`verify_pipewire.sh` uses:
+
+| source | what comes out |
+|---|---|
+| 7.1, one tone per channel | FL/FR/FC/LFE in phase (unity / 0.707); BL 0.786/0.619, BR 0.619/0.786, SL 0.875/0.485, SR 0.485/0.875 — every surround term 180° out of phase |
+| stereo | L → L, R → R at unity; no leakage into centre or surrounds |
+| 5.1, rear-left only | L 0.786, R 0.619, 180° — rears map to the rear pair, as on Windows |
+
+mpv opens the stream with the source layout and PipeWire maps by channel
+position, so stereo music only ever touches the phase-only front path. To bypass
+the chain for one file, pass `--audio-device=pipewire`.
 
 ## Verification
 
