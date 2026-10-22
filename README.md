@@ -314,3 +314,7 @@ G6HidExplore.exe hrtf set 0     # ...and back
 *This project is independent research. No Creative firmware binaries or
 decompiled app source are included in this repo — only our own analysis,
 tools, and notes.*
+
+## License
+
+GPL-3.0. See [LICENSE](LICENSE).

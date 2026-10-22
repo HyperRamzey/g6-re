@@ -356,3 +356,7 @@ BC, FLC/FRC and the `0x3` bypass) and 128/256-frame chunked Process calls
 * On Windows the equivalent node runs in `audiodg.exe`; the device itself only
   ever receives stereo. This port is what Linux needs to match that path.
 * To revert: remove the filter-chain config and reload PipeWire.
+
+## License
+
+GPL-3.0. See [`../LICENSE`](../LICENSE).

@@ -256,7 +256,7 @@ static const LADSPA_Descriptor g_desc = {
     /* Props    */ 0,
     /* Name     */ "Sound BlasterX G6 Creative MatrixEncoder 7.1 to binaural",
     /* Maker    */ "Reverse-engineered port of KSUSBAPO64.dll CMatrixEncoderEfxMod",
-    /* Copyright*/ "none",
+    /* Copyright*/ "GPL-3.0",
     /* PortCount*/ PORT_COUNT,
     /* PortDescriptors */ g_ports,
     /* PortNames        */ g_port_names,
