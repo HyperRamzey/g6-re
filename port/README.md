@@ -151,17 +151,34 @@ Any client can render through the chain by selecting the sink. For mpv:
 ```ini
 # ~/.config/mpv/mpv.conf
 audio-device=pipewire/g6_ct_downmix
+audio-channels=7.1,5.1,stereo
+audio-format=float
+audio-samplerate=48000
+
+# optional: linear-phase correction IR, applied per channel ahead of the downmixer
+af=lavfi=[amovie=/path/to/ir.wav[ir2];[in][ir2]afir=irfmt=mono:irnorm=-1:wet=1:minp=4096:maxp=4096:precision=double]
 ```
 
-The device name comes from `mpv --audio-device=help`. Verified with mpv 0.41
-(`--ao=pipewire`) by measuring the hardware sink's monitor — the same silent tap
-`verify_pipewire.sh` uses:
+`audio-format=float` is not cosmetic: without it mpv's PipeWire AO negotiates
+`s16le` and the chain receives 16-bit-quantised input. `audio-channels` keeps
+the source layout (no forced upmix). `irnorm=-1` makes `afir` use the raw IR —
+the default would auto-normalise its gain.
 
-| source | what comes out |
+Verified with mpv 0.41 (`--ao=pipewire`) by measuring the hardware sink's
+monitor — the same silent tap `verify_pipewire.sh` uses:
+
+| source | result |
 |---|---|
 | 7.1, one tone per channel | FL/FR/FC/LFE in phase (unity / 0.707); BL 0.786/0.619, BR 0.619/0.786, SL 0.875/0.485, SR 0.485/0.875 — every surround term 180° out of phase |
+| 7.1 TrueHD + Atmos (24-bit 48 kHz, 8 ch), 15 s | mpv sends `f32le 8ch 48 kHz`; capture vs offline reference (ffmpeg decode → same `afir` → `g6ct_cli64`): **residual rms −223.6 dBFS, peak −186.2 dBFS, correlation 1.00000000** |
 | stereo | L → L, R → R at unity; no leakage into centre or surrounds |
 | 5.1, rear-left only | L 0.786, R 0.619, 180° — rears map to the rear pair, as on Windows |
+
+The correction IR is applied per channel before the matrix. It is mono and the
+downmix is linear, so this is identical to filtering after the mix. The IR is
+linear phase: measured group delay is flat at **100.0 ms** across the band, so
+it delays audio relative to video — add `audio-delay=-0.1` if you want lip sync
+back.
 
 mpv opens the stream with the source layout and PipeWire maps by channel
 position, so stereo music only ever touches the phase-only front path. To bypass
