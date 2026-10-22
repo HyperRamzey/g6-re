@@ -184,6 +184,114 @@ mpv opens the stream with the source layout and PipeWire maps by channel
 position, so stereo music only ever touches the phase-only front path. To bypass
 the chain for one file, pass `--audio-device=pipewire`.
 
+## G6 hardware volume
+
+The G6's volume knob is the device's own USB Audio Class mixer, not a software
+gain. ALSA exposes it as `Speaker` (0..128, ~0.5 dB/step; 88 is −20.0 dB):
+
+```
+$ amixer -c 1 get Speaker
+Simple mixer control 'Speaker',0
+  Limits: Playback 0 - 128
+  Front Left: Playback 88 [69%] [-20.00dB] [on]
+  Front Right: Playback 88 [69%] [-20.00dB] [on]
+```
+
+[linuxblaster-control](https://github.com/RizeCrime/linuxblaster_control) 2.3.0
+is a native GUI for that mixer (plus SBX, EQ, mic and lighting); its Mixer tab
+drives `Speaker` through ALSA the same way Sound Blaster Command does on
+Windows, and the knob and the GUI stay in sync. On this machine the G6's
+`hidraw` nodes are already `root:wheel 0660` and the user is in `wheel`, so no
+root install is needed; the upstream udev rule (`TAG+="uaccess"`) is only
+required for setups where that is not true.
+
+This control sits *after* the chain: the downmixer has no volume control and no
+gain normalisation. Keep the G6's SBX/HRTF off (see Notes), or the device DSP
+colours the chain output.
+
+## Video / HDR / Dolby Vision (mpv)
+
+The Windows config runs `vo=gpu-next` on D3D11 with `hwdec=d3d11va`, and used
+`d3d11vpp` for RTX Video HDR and RTX VSR. The same config runs here on Wayland +
+Vulkan; only the D3D11-only passes needed replacing:
+
+```ini
+vo=gpu-next
+gpu-api=vulkan
+gpu-context=waylandvk
+hwdec=vulkan,nvdec
+
+dither-depth=auto
+dither=fruit
+
+scale=ewa_lanczossharp
+scale-radius=3.2383154841662362
+cscale=ewa_lanczossharp
+cscale-radius=3.2383154841662362
+dscale=mitchell
+linear-downscaling=no
+correct-downscaling=yes
+scale-antiring=0.6
+cscale-antiring=0.6
+
+glsl-shaders="~~/CfL_Prediction.glsl"
+glsl-shaders-append="~~/SSimDownscaler.glsl"
+glsl-shaders-append="~~/nlmeans.glsl"
+fbo-format=rgba16hf
+```
+
+`d3d11-output-format=rgb10_a2` has no Linux counterpart: the Wayland swapchain
+negotiates `VK_FORMAT_A2R10G10B10_UNORM_PACK32` with
+`VK_COLOR_SPACE_HDR10_ST2084_EXT`, and `dither-depth=auto` follows the actual
+depth (10-bit with KWin HDR, 8-bit otherwise).
+
+| Windows | Linux |
+|---|---|
+| `d3d11vpp` + `nvidia-true-hdr` (RTX HDR) | libplacebo `inverse-tone-mapping=yes` (optional profile; only enable while the output is in HDR) |
+| `d3d11vpp` + `scaling-mode=nvidia` (RTX VSR) | no Linux equivalent; `ewa_lanczossharp` does the upscale, ArtCNN/FSRCNNX optional |
+
+The HDR profile and the Dolby Vision / HDR10+ guard are the Windows ones,
+unchanged in intent:
+
+```ini
+[HDR]
+profile-cond=p["video-params/gamma"] == "pq" or p["video-params/gamma"] == "hlg"
+target-trc=pq
+target-prim=bt.2020
+target-gamut=display-p3
+target-peak=auto
+target-contrast=inf
+tone-mapping=spline
+hdr-compute-peak=yes
+hdr-peak-percentile=99.995
+hdr-contrast-recovery=0.30
+gamut-mapping-mode=perceptual
+
+[HDR-dynamic-metadata-guard]
+profile-cond=(get("current-tracks/video/dolby-vision-profile", 0) > 0) or (get("video-params/scene-max-r", 0) > 0) or (get("video-params/scene-max-g", 0) > 0) or (get("video-params/scene-max-b", 0) > 0)
+hdr-compute-peak=no
+```
+
+`target-peak=auto` is deliberate: KWin reports this panel at ~604 nits from EDID
+(630 with the override), so a hardcoded 750 would over-brighten the tone map.
+
+Verified against the real library (`/mnt/storage-space/1/`):
+
+| file | metadata | mpv 0.41 result |
+|---|---|---|
+| `Charles_DV7.mkv` | DoVi P7, EL present, 3840×2160 HEVC 10-bit, TrueHD 7.1 | `dovi=7`, `[vf] el_pair` active, `hw=vulkan`, guard profile applied |
+| `Blade.Runner.1982...DV.HEVC.HYBRID...mkv` | DoVi P8, BL+RPU | `dovi=8`, `hw=vulkan`, guard applied |
+| x265 HDR10 test (PQ/bt.2020) | HDR10 | `[HDR]` applied, `gamma=pq`, `prim=bt.2020` |
+| x264 SDR test (bt.709) | SDR | SDR path, `lowres-enhance` deband |
+
+`hwdec=vulkan,nvdec` covers H.264 8-bit, HEVC 10-bit and both DoVi profiles on
+the RTX 5070 (driver 615.78.08); the Dolby Vision RPU survives hardware decoding
+(the status line reports `dovi=7` / `dovi=8` while `hwdec-current=vulkan`).
+
+The video block does not touch the audio path: `Charles_DV7.mkv` plays with
+`f32le 8ch 48 kHz` reaching the chain, and the 810.mka null test against the
+offline reference is unchanged (residual −223.6 dBFS, correlation 1.00000000).
+
 ## Verification
 
 ```
