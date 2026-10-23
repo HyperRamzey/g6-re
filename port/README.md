@@ -359,4 +359,4 @@ BC, FLC/FRC and the `0x3` bypass) and 128/256-frame chunked Process calls
 
 ## License
 
-GPL-3.0. See [`../LICENSE`](../LICENSE).
+MIT. See [`../LICENSE`](../LICENSE).
