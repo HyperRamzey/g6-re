@@ -1,0 +1,12 @@
+# build outputs (the sources are what is tracked)
+plugin/*.dll
+plugin/*.o
+plugin/*.exe
+upstream/g6ct_cli
+upstream/g6ct_cli64
+upstream/test_ir
+upstream/test_ir64
+upstream/test_ladspa
+upstream/test_ladspa64
+tools/__pycache__/
+tools/*.log

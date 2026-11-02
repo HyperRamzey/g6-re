@@ -1,0 +1,28 @@
+plugin  : plugin\g6ct.dll
+  magic_ok     True
+  name         g6ct MatrixEncoder
+  in           8
+  out          2
+  params       10
+  param_names  ['In1', 'In2', 'In3', 'In4', 'In5', 'In6', 'In7', 'In8', 'OutL', 'OutR']
+  has_editor   True
+  editor_rect  (340, 250)
+  can_replace  True
+  can_double   True
+  vst_version  2400
+  uniqueID     0x47364354
+stim    : 144000 frames, block 512
+ref     : work\ref_check.raw
+processReplacing (float32 I/O, f64 internal):
+  float   peak 0.000e+00  rms 0.000e+00  null     -inf dB  sha 08e56173fa90ac5d == ref
+meters after playback:
+  In1   -5.9 dB  In2   -6.8 dB  In3   -7.9 dB  In4   -9.0 dB  In5  -10.3 dB  In6  -11.9 dB  In7  -13.9 dB  In8  -16.3 dB
+  OutL    0.0 dB  OutR    0.0 dB
+  display strings: -5.9 -6.8 -7.9 -9.0 -10.3 -11.9 -13.9 -16.3 0.0 0.0
+  parameter values agree with the display strings
+editor  : effEditOpen -> 1, child hwnd 0xA0E9E, effEditClose -> 0, child after close none
+degraded: 2 in / 2 out, 8 in / 1 out, 8 in / 0 out, n = 0, NULL AEffect -> no crash, output buffers finite: True
+processDoubleReplacing (f64 end to end):
+  double  peak 5.960e-08  rms 1.223e-08  null  -152.01 dB  sha cb94ad5a9f531ffe != ref
+
+PASS

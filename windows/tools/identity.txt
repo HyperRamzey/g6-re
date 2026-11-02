@@ -1,0 +1,15 @@
+# identity test config - passes every channel through untouched.
+#
+# Purpose: measure what the endpoint chain does on its own, with no DSP of
+# ours in the path. The stimulus is the same 8-channel signal used for the
+# null test, so any gain, crosstalk, or distortion seen here is intrinsic to
+# the G733 endpoint + audio engine, not to the matrix config.
+#
+# The If block keeps the same activation condition as the real config so the
+# two are compared under identical circumstances.
+
+Stage: post-mix pre-mix
+
+If: inputChannelCount == 8
+Copy: 1=1 2=2 3=3 4=4 5=5 6=6 7=7 8=8
+EndIf:

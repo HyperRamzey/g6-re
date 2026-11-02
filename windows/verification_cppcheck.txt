@@ -1,0 +1,16 @@
+Checking plugin\g6ct_vst.c ...
+plugin\g6ct_vst.c:775:53: style: Parameter 'e' can be declared as pointer to const. However it seems that 'dsp_get_parameter' is a callback function, if 'e' is declared with const you might also need to cast function pointer(s). [constParameterCallback]
+static float VSTCALLBACK dsp_get_parameter(AEffect *e, VstInt32 index)
+                                                    ^
+plugin\g6ct_vst.c:817:34: note: You might need to cast the function pointer here
+    e->getParameter = (VstIntPtr)dsp_get_parameter;
+                                 ^
+plugin\g6ct_vst.c:775:53: note: Parameter 'e' can be declared as pointer to const
+static float VSTCALLBACK dsp_get_parameter(AEffect *e, VstInt32 index)
+                                                    ^
+Checking plugin\g6ct_vst.c: G6CT_DOUBLE...
+Checking plugin\g6ct_vst.c: _WIN32...
+1/2 files checked 79% done
+Checking upstream\g6ct.c ...
+Checking upstream\g6ct.c: G6CT_DOUBLE...
+2/2 files checked 100% done

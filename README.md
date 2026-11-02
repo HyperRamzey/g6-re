@@ -226,7 +226,9 @@ stream and emits 2 channels, so:
 The whole node is decoded, reimplemented in C, and verified **sample-identical**
 to the shipping DLL under Wine. Full write-up:
 [`docs/APO-DOWNMIXER.md`](docs/APO-DOWNMIXER.md); port and tests:
-[`port/`](port/); A/B harness: [`apo-harness/`](apo-harness/).
+[`port/`](port/); A/B harness: [`apo-harness/`](apo-harness/). Windows delivery
+(VST2 insert for a 2.0 endpoint, plus the EqualizerAPO config):
+[`windows/`](windows/).
 
 ---
 

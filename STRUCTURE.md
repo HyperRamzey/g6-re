@@ -21,6 +21,14 @@ port/                  — C11 reimplementation of the G6's 7.1 downmixer
   test_ir.c              IR matrix / all-pass / pole-stability unit test
   Makefile               builds both precisions
   verify_pipewire.sh     end-to-end check through a live PipeWire graph
+windows/               - the same DSP delivered on Windows (2.0 endpoint case)
+  WINDOWS.md             architecture, evidence trail, VoiceMeeter/Element wiring
+  upstream/              shared DSP core + CLI + oracle (same files as port/)
+  plugin/g6ct_vst.c      VST2 insert: 8 in / 2 out, f64 internal, metered GUI
+  plugin/build.ps1       mingw64 build (no MSVC, no Windows SDK)
+  out/g6ct.txt           generated EqualizerAPO config for an 8-channel endpoint
+  tools/                 generators, null-test harnesses, live probes
+  work/                  the four stimulus/reference files the acceptance test needs
 apo-harness/           — runs the real KSUSBAPO64.dll under Wine and A/Bs the port
   harness.c              ctor + Process driven directly, fake upstream object
   compare_port.py        8x2 impulse matrix, port vs DLL
